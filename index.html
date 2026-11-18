@@ -1,0 +1,2645 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0a0a12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Fleeece" />
+  <title>Fleeece — Live Pose Directing &amp; Ghost Overlay Camera</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
+  <style>
+    /* Note: Camera access via navigator.mediaDevices.getUserMedia requires HTTPS or localhost.
+       Browsers block live camera streams on plain HTTP or file:// origins. */
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #050509;
+      color: #ffffff;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .gradient-bg {
+      background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%);
+    }
+    .gradient-bg:active {
+      filter: brightness(0.92);
+      transform: scale(0.99);
+    }
+    .glass-panel {
+      background: rgba(16, 16, 26, 0.78);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .cue-pop {
+      animation: cuePop 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes cuePop {
+      0% { opacity: 0; transform: translateY(12px) scale(0.92); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255, 255, 255, 0.18);
+      height: 6px;
+      border-radius: 999px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ec4899 0%, #f43f5e 100%);
+      border: 2px solid #ffffff;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(236, 72, 153, 0.5);
+    }
+    .touch-canvas-area {
+      touch-action: none;
+    }
+  </style>
+</head>
+<body class="flex justify-center items-center w-full h-full bg-[#050509]">
+
+  <!-- Mobile App Shell (max-width 430px centered) -->
+  <div id="appShell" class="relative w-full max-w-[430px] h-full max-h-[100dvh] bg-[#0a0a12] flex flex-col justify-between overflow-hidden shadow-2xl border-x border-white/5">
+
+    <!-- Top Toast Notification -->
+    <div id="toastContainer" class="pointer-events-none fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-[390px] px-4 flex flex-col gap-2"></div>
+
+    <!-- Insecure Origin Banner (shown only if not HTTPS/localhost) -->
+    <div id="httpsWarningBanner" class="hidden bg-amber-500/20 border-b border-amber-500/40 px-4 py-2.5 text-xs text-amber-200 flex items-center justify-between gap-2 z-40">
+      <span>⚠️ Camera requires <strong>HTTPS</strong> or <strong>localhost</strong>. Demo camera fallback is available.</span>
+      <button id="dismissHttpsBtn" type="button" class="text-amber-300 font-semibold px-2 py-0.5 rounded bg-amber-500/20">OK</button>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 0: START SCREEN                     -->
+    <!-- ========================================== -->
+    <section id="screenStart" class="flex-1 flex flex-col items-center justify-center px-6 text-center select-none">
+      <div class="mb-6 relative">
+        <div class="w-24 h-24 rounded-3xl bg-gradient-to-tr from-pink-500/20 to-rose-500/20 border border-pink-500/30 flex items-center justify-center text-6xl shadow-lg shadow-pink-500/10">
+          🐑
+        </div>
+      </div>
+      <h1 class="text-4xl font-extrabold tracking-tight gradient-text mb-2">Fleeece</h1>
+      <p class="text-sm text-zinc-400 max-w-[260px] mb-10">
+        Live two-phone pose directing &amp; ghost reference overlay camera.
+      </p>
+      <button id="btnStartApp" type="button" class="w-full max-w-[260px] min-h-[54px] rounded-2xl gradient-bg text-white font-bold text-lg shadow-lg shadow-pink-500/25 transition duration-150 flex items-center justify-center gap-2">
+        <span>Start</span>
+      </button>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 1: LANDING / FEATURE SELECTION      -->
+    <!-- ========================================== -->
+    <section id="screenLanding" class="hidden flex-1 flex flex-col justify-between p-6 overflow-y-auto">
+      <!-- Header -->
+      <div class="flex items-center justify-between pt-1">
+        <div class="flex items-center gap-2.5">
+          <span class="text-2xl">🐑</span>
+          <div>
+            <h2 class="text-xl font-extrabold gradient-text leading-none">Fleeece</h2>
+            <span class="text-[11px] text-zinc-500">Auto-Pair Rooms • PiP &amp; Screen Share</span>
+          </div>
+        </div>
+        <button id="btnOpenSettings" type="button" aria-label="Settings" class="w-11 h-11 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center text-lg transition">
+          ⚙️
+        </button>
+      </div>
+
+      <!-- Main 3 Feature Choices -->
+      <div class="my-auto py-6 flex flex-col gap-4">
+        <div class="text-left mb-1">
+          <p class="text-xs font-semibold uppercase tracking-wider text-pink-400">Choose Your Mode</p>
+          <h3 class="text-2xl font-bold text-white mt-0.5">How are you shooting?</h3>
+        </div>
+
+        <!-- Option 1: Photographer -->
+        <button id="btnRolePhotographer" type="button" class="w-full min-h-[76px] p-4 rounded-2xl bg-zinc-900/90 hover:bg-zinc-800/90 border border-white/10 hover:border-pink-500/40 flex items-center gap-4 text-left transition group">
+          <div class="w-12 h-12 rounded-xl gradient-bg flex items-center justify-center text-2xl shrink-0 shadow-md shadow-pink-500/20">
+            📷
+          </div>
+          <div class="flex-1">
+            <div class="font-bold text-base text-white group-hover:text-pink-300 transition">I'm taking the photo</div>
+            <div class="text-xs text-zinc-400 mt-0.5">Auto-pairs in Room A • Stream camera or screen</div>
+          </div>
+          <span class="text-zinc-500 group-hover:text-pink-400 text-lg">→</span>
+        </button>
+
+        <!-- Option 2: Poser -->
+        <button id="btnRolePoser" type="button" class="w-full min-h-[76px] p-4 rounded-2xl bg-zinc-900/90 hover:bg-zinc-800/90 border border-white/10 hover:border-pink-500/40 flex items-center gap-4 text-left transition group">
+          <div class="w-12 h-12 rounded-xl bg-pink-500/15 border border-pink-500/30 flex items-center justify-center text-2xl shrink-0">
+            🙋
+          </div>
+          <div class="flex-1">
+            <div class="font-bold text-base text-white group-hover:text-pink-300 transition">I'm posing</div>
+            <div class="text-xs text-zinc-400 mt-0.5">Auto-pairs in Room A • Easy Screen Share &amp; PiP</div>
+          </div>
+          <span class="text-zinc-500 group-hover:text-pink-400 text-lg">→</span>
+        </button>
+
+        <!-- Option 3: Solo Reference Overlay -->
+        <button id="btnRoleSolo" type="button" class="w-full min-h-[76px] p-4 rounded-2xl bg-zinc-900/90 hover:bg-zinc-800/90 border border-white/10 hover:border-pink-500/40 flex items-center gap-4 text-left transition group">
+          <div class="w-12 h-12 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-2xl shrink-0">
+            🖼️
+          </div>
+          <div class="flex-1">
+            <div class="font-bold text-base text-white group-hover:text-pink-300 transition">Solo — Reference overlay</div>
+            <div class="text-xs text-zinc-400 mt-0.5">Ghost overlay any photo on live camera</div>
+          </div>
+          <span class="text-zinc-500 group-hover:text-pink-400 text-lg">→</span>
+        </button>
+      </div>
+
+      <!-- Footer Privacy Note -->
+      <div class="rounded-xl bg-white/[0.03] border border-white/5 p-3 text-center">
+        <p class="text-[11px] text-zinc-400 leading-relaxed">
+          ⚡ Both devices auto-connect in <strong>Room A</strong> (no code typing needed, order doesn't matter!).
+        </p>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 2A: PHOTOGRAPHER LIVE VIEW          -->
+    <!-- ========================================== -->
+    <section id="screenPhotographer" class="hidden relative flex-1 flex flex-col justify-between bg-black overflow-hidden">
+      <!-- Fullscreen Live Camera Video -->
+      <video id="photographerVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover bg-black"></video>
+
+      <!-- Incoming Screen/Pose Cast from Poser -->
+      <img id="photographerCastOverlay" alt="Poser shared screen or reference pose" class="hidden absolute inset-0 w-full h-full object-contain pointer-events-none z-10" style="opacity: 0.55;" />
+
+      <!-- Top Bar: Code Chip + Camera Controls + Status Indicator -->
+      <div class="relative z-20 flex flex-col gap-2 p-3 pt-3.5 bg-gradient-to-b from-black/85 via-black/45 to-transparent">
+        <div class="flex items-center justify-between gap-2">
+          <!-- Session Code Chip -->
+          <button id="btnCopySessionCode" type="button" title="Tap to copy code" class="min-h-[44px] px-3 py-1 rounded-xl glass-panel flex items-center gap-2 text-left active:scale-95 transition">
+            <div>
+              <span class="block text-[10px] uppercase tracking-wider text-zinc-400">Code</span>
+              <span id="photographerCodeDisplay" class="font-mono font-extrabold text-sm tracking-widest text-pink-400">-----</span>
+            </div>
+            <span class="text-xs text-zinc-300 bg-white/10 px-1.5 py-0.5 rounded">Copy</span>
+          </button>
+
+          <!-- Action Buttons: Flip Camera, Screen Share, Copy Link -->
+          <div class="flex items-center gap-1.5">
+            <button id="btnPhotographerFlipCam" type="button" title="Switch front/back camera" class="min-h-[44px] min-w-[44px] px-2.5 rounded-xl glass-panel flex items-center justify-center text-base active:scale-95 transition">
+              🔄
+            </button>
+            <button id="btnPhotographerShareScreen" type="button" title="Share screen (desktop/laptop)" class="min-h-[44px] min-w-[44px] px-2.5 rounded-xl glass-panel flex items-center justify-center text-base active:scale-95 transition">
+              🖥️
+            </button>
+            <button id="btnPhotographerCopyLink" type="button" title="Copy direct join link" class="min-h-[44px] min-w-[44px] px-2.5 rounded-xl glass-panel flex items-center justify-center text-base active:scale-95 transition">
+              🔗
+            </button>
+          </div>
+
+          <!-- Status Dot Indicator -->
+          <div class="min-h-[44px] px-3 py-1.5 rounded-xl glass-panel flex items-center gap-2">
+            <span id="photographerStatusDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="photographerStatusText" class="text-xs font-semibold text-white">Waiting</span>
+          </div>
+        </div>
+
+        <!-- 1-Tap Instant Room Switcher -->
+        <div class="flex items-center justify-between gap-1.5 bg-black/65 p-1.5 rounded-xl border border-white/10">
+          <span class="text-[10px] font-bold uppercase tracking-wider text-zinc-400 pl-1.5">Auto-Pair Room:</span>
+          <div class="flex items-center gap-1">
+            <button type="button" data-quick-room="ROOMA" class="photo-quick-room px-2.5 py-1 rounded-lg bg-pink-500 text-white text-xs font-bold transition">Room A</button>
+            <button type="button" data-quick-room="ROOMB" class="photo-quick-room px-2.5 py-1 rounded-lg bg-white/10 text-zinc-300 text-xs font-bold transition">Room B</button>
+            <button type="button" data-quick-room="ROOMC" class="photo-quick-room px-2.5 py-1 rounded-lg bg-white/10 text-zinc-300 text-xs font-bold transition">Room C</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Foreground Notice Pill -->
+      <div class="relative z-20 px-4 flex justify-between items-center gap-2">
+        <span id="photographerStreamBadge" class="text-[11px] bg-black/60 text-zinc-300 px-2.5 py-1 rounded-full border border-white/10 truncate">
+          Auto-broadcasting in Room A…
+        </span>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="btnClearPhotographerCast" type="button" class="hidden text-[11px] bg-amber-500/25 text-amber-200 px-2.5 py-1 rounded-full border border-amber-500/40">
+            ✕ Hide Cast
+          </button>
+          <button id="btnSimulatePoserCue" type="button" class="text-[11px] bg-pink-500/20 hover:bg-pink-500/30 text-pink-200 px-2.5 py-1 rounded-full border border-pink-500/40 transition">
+            ✨ Test Cue
+          </button>
+        </div>
+      </div>
+
+      <!-- Center-Bottom Incoming Pose Cue Overlay -->
+      <div class="relative z-20 mt-auto mb-4 px-5 flex flex-col items-center pointer-events-none">
+        <div id="photographerCueBox" class="hidden cue-pop w-full max-w-[340px] rounded-2xl bg-gradient-to-r from-pink-600/90 to-rose-600/90 border-2 border-white/40 px-5 py-4 text-center shadow-2xl shadow-pink-600/50">
+          <span class="block text-[10px] uppercase tracking-widest text-pink-100 font-semibold mb-0.5">Poser Direction</span>
+          <div id="photographerCueText" class="text-2xl font-extrabold text-white tracking-tight">Smile</div>
+        </div>
+      </div>
+
+      <!-- Bottom Bar: Shutter + End Session -->
+      <div class="relative z-20 p-4 pb-6 bg-gradient-to-t from-black/90 via-black/60 to-transparent flex items-center justify-between gap-3">
+        <button id="btnPhotographerEnd" type="button" class="flex-1 min-h-[48px] rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-white/15 text-white font-semibold text-sm transition">
+          End Session
+        </button>
+        <button id="btnPhotographerSnap" type="button" aria-label="Capture Photo" class="w-14 h-14 rounded-full bg-white p-1 shadow-lg active:scale-95 transition flex items-center justify-center shrink-0">
+          <span class="w-full h-full rounded-full border-2 border-black bg-white block"></span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 2B: POSER JOIN / QUICK LAUNCH       -->
+    <!-- ========================================== -->
+    <section id="screenJoin" class="hidden flex-1 flex flex-col justify-between p-5 overflow-y-auto">
+      <!-- Top Back Bar -->
+      <div class="flex items-center justify-between">
+        <button id="btnJoinBack" type="button" class="min-h-[44px] px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium flex items-center gap-1.5">
+          <span>←</span> <span>Back</span>
+        </button>
+        <span class="text-xs font-semibold text-pink-400">Poser &amp; Screen Share Setup</span>
+      </div>
+
+      <!-- EASIEST NO-CODE OPTIONS FIRST! -->
+      <div class="my-auto py-3 flex flex-col items-center text-center gap-3.5">
+        <div class="w-full rounded-2xl bg-gradient-to-br from-pink-500/15 to-rose-500/10 border border-pink-500/40 p-4 text-left">
+          <div class="text-xs font-extrabold uppercase tracking-wider text-pink-400 mb-1">⚡ 1-Tap Connect (No Code Needed)</div>
+          <p class="text-xs text-zinc-300 mb-3">
+            Tap <strong>Room A</strong> below to auto-connect with the Photographer device:
+          </p>
+          <div class="grid grid-cols-3 gap-2 mb-2.5">
+            <button type="button" data-poser-room="ROOMA" class="poser-quick-room min-h-[46px] rounded-xl gradient-bg text-white font-extrabold text-xs shadow-md">
+              ⚡ Room A
+            </button>
+            <button type="button" data-poser-room="ROOMB" class="poser-quick-room min-h-[46px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-pink-500/40 text-white font-extrabold text-xs">
+              ⚡ Room B
+            </button>
+            <button type="button" data-poser-room="ROOMC" class="poser-quick-room min-h-[46px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-pink-500/40 text-white font-extrabold text-xs">
+              ⚡ Room C
+            </button>
+          </div>
+          <button id="btnPoserDirectScreenShare" type="button" class="w-full min-h-[46px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 text-xs font-bold text-white flex items-center justify-center gap-2 transition">
+            <span>🖥️</span> <span>Open Poser Screen Share &amp; Mirror Directly</span>
+          </button>
+        </div>
+
+        <!-- Optional Manual 5-Character Code Input -->
+        <div class="w-full rounded-2xl bg-zinc-900/70 border border-white/10 p-4 flex flex-col items-center">
+          <span class="text-xs font-semibold text-zinc-400 mb-2">Or enter a custom 5-character code:</span>
+          <div class="flex items-center gap-2 w-full">
+            <input
+              id="joinCodeInput"
+              type="text"
+              maxlength="5"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              placeholder="ROOMA"
+              class="flex-1 h-12 rounded-xl bg-zinc-950 border border-white/15 focus:border-pink-500 text-center font-mono text-xl font-extrabold tracking-[0.2em] text-white uppercase outline-none transition"
+            />
+            <button id="btnJoinConnect" type="button" disabled class="px-5 h-12 rounded-xl gradient-bg text-white font-bold text-sm disabled:opacity-40 disabled:pointer-events-none transition">
+              Join
+            </button>
+          </div>
+          <div id="joinStatusStep" class="hidden mt-2 text-xs font-medium text-pink-300"></div>
+          <div id="joinErrorBox" class="hidden mt-2 w-full rounded-xl bg-rose-500/15 border border-rose-500/40 px-3 py-2 text-xs text-rose-200 text-center"></div>
+        </div>
+
+        <button id="btnJoinDemoMode" type="button" class="text-xs text-zinc-400 hover:text-pink-400 underline underline-offset-4 py-1">
+          Testing on one device? Launch Simulated Connection
+        </button>
+      </div>
+
+      <div class="text-center text-[11px] text-zinc-500">
+        Triple-Engine Sync (HTTPS Port 443 + Cloud WSS + WebRTC)
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 2C: POSER LIVE MONITOR & 12-DOCK    -->
+    <!-- ========================================== -->
+    <section id="screenPoser" class="hidden relative flex-1 flex flex-col justify-between bg-black overflow-hidden">
+      <!-- Live Cloud/DataChannel Frame Stream Image -->
+      <img id="poserFallbackImg" alt="Live camera feed" class="hidden absolute inset-0 w-full h-full object-cover bg-black" />
+
+      <!-- Incoming Photographer WebRTC Video OR Poser's Own Shared Screen / Mirror Camera -->
+      <video id="poserRemoteVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover bg-transparent"></video>
+
+      <!-- Interactive Draggable/Resizable Ghost Pose Overlay right inside Poser Screen! -->
+      <img id="poserLocalGhostImg" alt="Poser reference pose overlay" class="hidden absolute inset-0 w-full h-full object-contain pointer-events-none z-10" style="opacity: 0.45;" />
+
+      <!-- Non-Blocking Easy Screen-Share & Source Quick-Start Card -->
+      <div id="poserConnectingOverlay" class="absolute inset-x-3 top-32 z-10 rounded-3xl bg-[#12121e]/95 border border-pink-500/35 p-4 text-center shadow-2xl backdrop-blur-md">
+        <p id="poserConnectingTitle" class="text-sm font-extrabold text-white">Easy Poser Screen Share &amp; Live View</p>
+        <p id="poserConnectingHint" class="text-[11px] text-zinc-300 mt-1 mb-3">
+          Auto-listening in <span id="poserActiveRoomLabel" class="text-pink-400 font-mono font-bold">ROOMA</span>. Or start any instant screen/camera view below:
+        </p>
+        <div class="grid grid-cols-2 gap-2 text-left">
+          <button id="btnQuickPoserScreenShare" type="button" class="p-2.5 rounded-xl gradient-bg text-white flex items-center gap-2 shadow-md active:scale-95 transition">
+            <span class="text-lg">🖥️</span>
+            <div>
+              <div class="text-xs font-extrabold leading-tight">Share Screen</div>
+              <div class="text-[10px] text-pink-100">Window / Tab / Video</div>
+            </div>
+          </button>
+          <button id="btnQuickPoserMyCam" type="button" class="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-white flex items-center gap-2 active:scale-95 transition">
+            <span class="text-lg">📷</span>
+            <div>
+              <div class="text-xs font-extrabold leading-tight">Mirror Camera</div>
+              <div class="text-[10px] text-zinc-400">Live selfie / rear cam</div>
+            </div>
+          </button>
+          <button id="btnQuickPoserUploadPose" type="button" class="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-white flex items-center gap-2 active:scale-95 transition">
+            <span class="text-lg">🖼️</span>
+            <div>
+              <div class="text-xs font-extrabold leading-tight">Pose / Video File</div>
+              <div class="text-[10px] text-zinc-400">Overlay photo or clip</div>
+            </div>
+          </button>
+          <button id="btnQuickPoserNativeCall" type="button" class="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-white flex items-center gap-2 active:scale-95 transition">
+            <span class="text-lg">🪟</span>
+            <div>
+              <div class="text-xs font-extrabold leading-tight">Float Mini PiP</div>
+              <div class="text-[10px] text-zinc-400">Float over other apps</div>
+            </div>
+          </button>
+        </div>
+        <button id="btnDismissPoserOverlay" type="button" class="mt-2.5 text-[11px] text-zinc-400 hover:text-white underline">
+          Hide this card
+        </button>
+      </div>
+
+      <!-- Top Bar + Room Switcher + Always-Available 1-Tap Screen Share Toolbar -->
+      <div class="relative z-20 flex flex-col gap-1.5 p-2.5 pt-3 bg-gradient-to-b from-black/95 via-black/60 to-transparent">
+        <div class="flex items-center justify-between gap-1.5">
+          <button id="btnPoserEnd" type="button" class="min-h-[40px] px-2.5 rounded-xl glass-panel text-xs font-semibold text-white hover:bg-white/15 transition">
+            ← End Session
+          </button>
+
+          <!-- Instant Room Pills inside Poser Screen -->
+          <div class="flex items-center gap-1 bg-black/70 p-1 rounded-xl border border-white/10">
+            <button type="button" data-live-poser-room="ROOMA" class="live-poser-room px-2 py-1 rounded-lg bg-pink-500 text-white text-[10px] font-extrabold">Room A</button>
+            <button type="button" data-live-poser-room="ROOMB" class="live-poser-room px-2 py-1 rounded-lg bg-white/10 text-zinc-300 text-[10px] font-extrabold">Room B</button>
+            <button type="button" data-live-poser-room="ROOMC" class="live-poser-room px-2 py-1 rounded-lg bg-white/10 text-zinc-300 text-[10px] font-extrabold">Room C</button>
+          </div>
+
+          <div class="min-h-[40px] px-2.5 py-1 rounded-xl glass-panel flex items-center gap-1.5">
+            <span id="poserStatusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+            <span id="poserStatusText" class="text-xs font-semibold text-white">Live</span>
+          </div>
+        </div>
+
+        <!-- Always-Visible 1-Tap Screen Share & Source Bar in "I'm posing" -->
+        <div class="grid grid-cols-5 gap-1 bg-black/75 p-1 rounded-xl border border-white/10">
+          <button id="btnBarPoserScreen" type="button" class="py-1.5 px-1 rounded-lg gradient-bg text-[11px] font-bold text-white truncate transition">
+            🖥️ Screen
+          </button>
+          <button id="btnBarPoserCam" type="button" class="py-1.5 px-1 rounded-lg bg-white/10 hover:bg-pink-500/30 text-[11px] font-bold text-white truncate transition">
+            📷 My Cam
+          </button>
+          <button id="btnBarPoserPose" type="button" class="py-1.5 px-1 rounded-lg bg-white/10 hover:bg-pink-500/30 text-[11px] font-bold text-white truncate transition">
+            🖼️ Media
+          </button>
+          <button id="btnBarPoserPip" type="button" class="py-1.5 px-1 rounded-lg bg-white/10 hover:bg-pink-500/30 text-[11px] font-bold text-white truncate transition">
+            🪟 PiP
+          </button>
+          <button id="btnBarPoserFlip" type="button" class="py-1.5 px-1 rounded-lg bg-white/10 hover:bg-pink-500/30 text-[11px] font-bold text-white truncate transition">
+            🔄 Flip
+          </button>
+        </div>
+        <!-- Hidden button kept for ID/feature compatibility -->
+        <button id="btnPoserOpenShareHub" type="button" class="hidden">🖥️ Share Screen / Pose</button>
+      </div>
+
+      <!-- Sent Feedback Toast Pill -->
+      <div class="relative z-20 mx-auto my-auto pointer-events-none">
+        <div id="poserSentFeedback" class="hidden rounded-full bg-black/80 border border-pink-500/60 px-4 py-1.5 text-xs font-bold text-pink-300 shadow-lg">
+          Sent: Smile
+        </div>
+      </div>
+
+      <!-- Bottom Dock: 4-Column Grid of 12 Direction Buttons -->
+      <div class="relative z-20 p-3 pb-5 bg-gradient-to-t from-black via-black/90 to-transparent">
+        <div class="text-[10px] uppercase tracking-wider text-zinc-400 text-center mb-2 font-semibold">
+          Tap to send instant pose cue
+        </div>
+        <div id="poserDirectionGrid" class="grid grid-cols-4 gap-1.5">
+          <!-- Populated dynamically with the 12 mandatory direction buttons -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SCREEN 3: SOLO REFERENCE OVERLAY CAMERA    -->
+    <!-- ========================================== -->
+    <section id="screenSolo" class="hidden relative flex-1 flex flex-col justify-between bg-black overflow-hidden">
+
+      <!-- Step 3A: Upload / Drag-and-Drop Landing View -->
+      <div id="soloUploadStep" class="flex-1 flex flex-col justify-between p-6 bg-[#0a0a12]">
+        <div class="flex items-center justify-between">
+          <button id="btnSoloUploadBack" type="button" class="min-h-[44px] px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium flex items-center gap-1.5">
+            <span>←</span> <span>Back</span>
+          </button>
+          <span class="text-xs font-semibold text-pink-400">Ghost Overlay Camera</span>
+        </div>
+
+        <div class="my-auto flex flex-col items-center">
+          <div
+            id="soloDropZone"
+            role="button"
+            tabindex="0"
+            class="w-full min-h-[250px] rounded-3xl border-2 border-dashed border-pink-500/50 hover:border-pink-400 bg-pink-500/[0.04] hover:bg-pink-500/[0.08] p-6 flex flex-col items-center justify-center text-center cursor-pointer transition"
+          >
+            <div class="w-16 h-16 rounded-2xl gradient-bg flex items-center justify-center text-3xl mb-4 shadow-lg shadow-pink-500/20">
+              🖼️
+            </div>
+            <p class="text-base font-bold text-white mb-1">
+              Drag &amp; drop a reference photo here, or tap to choose
+            </p>
+            <p class="text-xs text-zinc-400 max-w-[240px]">
+              Supports gallery photos (JPG, PNG, WebP). Everything stays 100% on your device.
+            </p>
+          </div>
+          <input id="soloFileInput" type="file" accept="image/*" class="hidden" />
+
+          <!-- Quick Demo Reference Presets -->
+          <div class="w-full mt-5">
+            <p class="text-xs text-zinc-400 mb-2 text-center">Or try a sample pose guide right now:</p>
+            <div class="grid grid-cols-2 gap-2">
+              <button id="btnSamplePortrait" type="button" class="min-h-[44px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs font-semibold text-zinc-200 px-3 py-2 transition">
+                🧍 Portrait Silhouette
+              </button>
+              <button id="btnSampleArchitecture" type="button" class="min-h-[44px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs font-semibold text-zinc-200 px-3 py-2 transition">
+                🏛️ Rule-of-Thirds Arch
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="text-center text-[11px] text-zinc-500">
+          1-finger drag • 2-finger pinch zoom (0.2x–5x) • 2-finger twist rotate
+        </div>
+      </div>
+
+      <!-- Step 3B: Live Camera + Interactive Ghost Overlay View -->
+      <div id="soloCameraStep" class="hidden relative flex-1 flex flex-col justify-between bg-black overflow-hidden">
+        <!-- Camera Preview Container & Gesture Surface -->
+        <div id="soloViewport" class="relative flex-1 w-full h-full overflow-hidden touch-canvas-area bg-black">
+          <video id="soloVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover pointer-events-none"></video>
+
+          <!-- Ghost Reference Image Overlay -->
+          <img
+            id="soloOverlayImg"
+            alt="Reference overlay"
+            draggable="false"
+            class="
+              absolute top-1/2 left-1/2 max-w-none pointer-events-none select-none origin-center
+            "
+            style="opacity: 0.5; transform: translate(-50%, -50%) translate(0px, 0px) scale(1) rotate(0deg);"
+          />
+
+          <!-- Top Floating Camera Controls -->
+          <div class="absolute top-0 inset-x-0 z-20 flex items-center justify-between p-3 pt-4 bg-gradient-to-b from-black/80 via-black/35 to-transparent">
+            <button id="btnSoloExit" type="button" aria-label="Exit Solo mode" class="min-h-[44px] px-3 rounded-xl glass-panel text-xs font-semibold text-white flex items-center gap-1.5 active:scale-95 transition">
+              <span>←</span> <span>Exit</span>
+            </button>
+
+            <div class="flex items-center gap-1.5">
+              <button id="btnSoloChangePhoto" type="button" class="min-h-[44px] px-3 rounded-xl glass-panel text-xs font-semibold text-pink-300 active:scale-95 transition">
+                🖼️ Change photo
+              </button>
+              <button id="btnSoloResetTransform" type="button" title="Reset overlay position" class="min-h-[44px] px-2.5 rounded-xl glass-panel text-xs font-semibold text-zinc-200 active:scale-95 transition">
+                🎯
+              </button>
+              <button id="btnSoloFlash" type="button" title="Toggle rear flash" class="min-h-[44px] min-w-[44px] rounded-xl glass-panel text-sm font-semibold text-zinc-200 flex items-center justify-center active:scale-95 transition">
+                ⚡
+              </button>
+              <button id="btnSoloFlipCam" type="button" title="Switch Front/Back Camera" class="min-h-[44px] min-w-[44px] rounded-xl glass-panel text-sm font-semibold text-zinc-200 flex items-center justify-center active:scale-95 transition">
+                🔄
+              </button>
+            </div>
+          </div>
+
+          <!-- Transform Telemetry Badge -->
+          <div class="absolute bottom-3 left-3 z-20 pointer-events-none">
+            <span id="soloTransformBadge" class="text-[10px] font-mono bg-black/65 text-zinc-300 px-2.5 py-1 rounded-full border border-white/10">
+              Scale: 1.00x • Rot: 0°
+            </span>
+          </div>
+        </div>
+
+        <!-- Bottom Controls Bar: Opacity Slider + Circular Shutter -->
+        <div class="relative z-20 bg-[#0a0a12]/95 border-t border-white/10 px-4 pt-3 pb-5 flex flex-col gap-3">
+          <!-- Opacity Slider (0-100%) -->
+          <div class="flex items-center gap-3">
+            <span class="text-xs font-semibold text-zinc-400 w-16">Opacity</span>
+            <input id="soloOpacitySlider" type="range" min="0" max="100" value="50" class="flex-1" />
+            <span id="soloOpacityValue" class="text-xs font-mono font-bold text-pink-400 w-10 text-right">50%</span>
+          </div>
+
+          <!-- Shutter Row -->
+          <div class="flex items-center justify-between px-2">
+            <button id="btnSoloRotateLeft" type="button" class="min-h-[44px] px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-zinc-300">
+              ↺ -15°
+            </button>
+
+            <!-- Circular Shutter Button -->
+            <button id="btnSoloShutter" type="button" aria-label="Capture composite photo" class="w-16 h-16 rounded-full gradient-bg p-1 shadow-xl shadow-pink-500/30 active:scale-90 transition flex items-center justify-center">
+              <span class="w-full h-full rounded-full border-2 border-black bg-white block"></span>
+            </button>
+
+            <button id="btnSoloRotateRight" type="button" class="min-h-[44px] px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-zinc-300">
+              ↻ +15°
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- EASY SCREEN SHARE & POSE CAST HUB MODAL    -->
+    <!-- ========================================== -->
+    <div id="shareHubModal" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center p-4">
+      <div class="w-full max-w-[395px] rounded-3xl bg-[#12121e] border border-white/15 p-5 flex flex-col gap-3 shadow-2xl">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-[10px] font-bold uppercase tracking-wider text-pink-400">Works on Phone &amp; Laptop</span>
+            <h3 class="text-lg font-extrabold text-white">Easy Screen &amp; Pose Share</h3>
+          </div>
+          <button id="btnCloseShareHub" type="button" class="w-9 h-9 rounded-xl bg-white/10 text-sm font-bold">✕</button>
+        </div>
+
+        <!-- Method 1: Direct Laptop/Desktop Browser Screen Share -->
+        <button id="btnHubLiveScreenShare" type="button" class="w-full p-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-pink-500/40 flex items-center gap-3 text-left transition">
+          <div class="w-10 h-10 rounded-xl gradient-bg flex items-center justify-center text-lg shrink-0">
+            🖥️
+          </div>
+          <div class="flex-1">
+            <div class="text-xs font-bold text-white">1. Share Laptop Screen / Window / Tab</div>
+            <div class="text-[11px] text-zinc-400 mt-0.5">
+              Streams any desktop window, tab, or mirrored phone screen directly.
+            </div>
+          </div>
+        </button>
+
+        <!-- Method 2: Stream Screen Recording Video OR Pose Photo (Works on iPhone & Android!) -->
+        <button id="btnHubCastPhoto" type="button" class="w-full p-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-pink-500/40 flex items-center gap-3 text-left transition">
+          <div class="w-10 h-10 rounded-xl bg-pink-500/20 border border-pink-500/40 flex items-center justify-center text-lg shrink-0">
+            🖼️
+          </div>
+          <div class="flex-1">
+            <div class="text-xs font-bold text-white">2. Share Phone Screen Clip or Pose Photo</div>
+            <div class="text-[11px] text-zinc-400 mt-0.5">
+              Pick any photo, screenshot, or screen-recording video from your gallery to play &amp; beam live!
+            </div>
+          </div>
+        </button>
+        <input id="hubCastFileInput" type="file" accept="image/*,video/*" class="hidden" />
+
+        <!-- Method 3: Share Poser's Own Camera Live -->
+        <button id="btnHubShareMyCamera" type="button" class="w-full p-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-pink-500/40 flex items-center gap-3 text-left transition">
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-lg shrink-0">
+            📷
+          </div>
+          <div class="flex-1">
+            <div class="text-xs font-bold text-white">3. Turn On Live Camera Mirror</div>
+            <div class="text-[11px] text-zinc-400 mt-0.5">
+              Stream this device's front or rear camera inside Poser mode and to the other device.
+            </div>
+          </div>
+        </button>
+
+        <!-- Method 4: Floating Picture-in-Picture (PiP) Window over other apps -->
+        <button id="btnHubFloatPip" type="button" class="w-full p-3 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-pink-500/40 flex items-center gap-3 text-left transition">
+          <div class="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-lg shrink-0">
+            🪟
+          </div>
+          <div class="flex-1">
+            <div class="text-xs font-bold text-white">4. Float Live View Over Other Apps (PiP)</div>
+            <div class="text-[11px] text-zinc-400 mt-0.5">
+              Pops the live feed into a floating mini-window that stays on top while you open your phone's native Camera, Instagram, or Snapchat!
+            </div>
+          </div>
+        </button>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- CAPTURE RESULT DRAWER (SHARE/RETAKE/DONE)  -->
+    <!-- ========================================== -->
+    <div id="captureModal" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-5">
+      <div class="w-full max-w-[380px] rounded-3xl bg-[#12121e] border border-white/15 p-5 flex flex-col items-center text-center shadow-2xl">
+        <div class="flex items-center justify-between w-full mb-3">
+          <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">✓ Saved to Device</span>
+          <span id="captureFilenameLabel" class="text-[11px] font-mono text-zinc-400">fleeece.jpg</span>
+        </div>
+        <div class="w-full aspect-[3/4] max-h-[320px] rounded-2xl overflow-hidden bg-black border border-white/10 mb-4 flex items-center justify-center">
+          <img id="capturePreviewImg" alt="Captured photo" class="w-full h-full object-contain" />
+        </div>
+        <div class="grid grid-cols-3 gap-2 w-full">
+          <button id="btnCaptureShare" type="button" class="min-h-[46px] rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold text-white transition">
+            📤 Share
+          </button>
+          <button id="btnCaptureRetake" type="button" class="min-h-[46px] rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold text-white transition">
+            🔄 Retake
+          </button>
+          <button id="btnCaptureDone" type="button" class="min-h-[46px] rounded-xl gradient-bg text-xs font-bold text-white transition">
+            ✓ Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- SETTINGS MODAL (QUALITY / THEME / ABOUT)   -->
+    <!-- ========================================== -->
+    <div id="settingsModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-5">
+      <div class="w-full max-w-[380px] rounded-3xl bg-[#12121e] border border-white/15 p-5 flex flex-col gap-4 shadow-2xl">
+        <div class="flex items-center justify-between">
+          <h3 class="text-lg font-extrabold text-white">Settings</h3>
+          <button id="btnCloseSettings" type="button" class="w-9 h-9 rounded-xl bg-white/10 text-sm font-bold">✕</button>
+        </div>
+
+        <!-- Image Quality -->
+        <div class="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
+          <div class="text-left">
+            <div class="text-sm font-semibold text-white">Image Quality</div>
+            <div class="text-[11px] text-zinc-400">JPEG compression on capture</div>
+          </div>
+          <select id="settingQuality" class="rounded-xl bg-zinc-900 border border-white/15 px-3 py-2 text-xs font-semibold text-white">
+            <option value="0.95">High (95%)</option>
+            <option value="0.80">Medium (80%)</option>
+          </select>
+        </div>
+
+        <!-- Save Location Info -->
+        <div class="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
+          <div class="text-left">
+            <div class="text-sm font-semibold text-white">Save Location</div>
+            <div class="text-[11px] text-zinc-400">Downloads / Device Gallery</div>
+          </div>
+          <span class="text-xs font-mono text-pink-400 bg-pink-500/10 px-2.5 py-1 rounded-lg">Auto Download</span>
+        </div>
+
+        <!-- Dark Mode Pitch Black Toggle -->
+        <div class="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
+          <div class="text-left">
+            <div class="text-sm font-semibold text-white">OLED Pitch Black</div>
+            <div class="text-[11px] text-zinc-400">Pure #000000 background</div>
+          </div>
+          <button id="btnToggleOled" type="button" class="px-3 py-1.5 rounded-xl bg-pink-500/20 border border-pink-500/40 text-xs font-bold text-pink-300">
+            Active
+          </button>
+        </div>
+
+        <!-- About Section -->
+        <div class="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 text-left">
+          <div class="text-xs font-bold text-white mb-1">About Fleeece v3.0 (Auto-Pair + PiP Edition)</div>
+          <p class="text-[11px] text-zinc-400 leading-relaxed">
+            Auto-pairs across any network using Triple-Engine Sync (HTTPS Port-443 Relay + Multi-Broker WSS + WebRTC with automatic Peer ID collision recovery) and includes Floating PiP + Mobile Video/Photo Screen Sharing.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Hidden Compositing & Frame Relay Canvases -->
+  <canvas id="captureCanvas" class="hidden"></canvas>
+  <canvas id="syntheticCamCanvas" width="720" height="960" class="hidden"></canvas>
+  <canvas id="frameRelayCanvas" width="320" height="426" class="hidden"></canvas>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // --- 1. PWA Manifest Setup ---
+      try {
+        const manifestObj = {
+          name: 'Fleeece — Pose Directing & Ghost Camera',
+          short_name: 'Fleeece',
+          start_url: '.',
+          display: 'standalone',
+          background_color: '#0a0a12',
+          theme_color: '#ec4899',
+          icons: [
+            {
+              src: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="%230a0a12"/><text y=".9em" font-size="72" x="12">🐑</text></svg>',
+              sizes: '192x192',
+              type: 'image/svg+xml'
+            }
+          ]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifestObj)], { type: 'application/manifest+json' });
+        const manifestLink = document.createElement('link');
+        manifestLink.rel = 'manifest';
+        manifestLink.href = URL.createObjectURL(manifestBlob);
+        document.head.appendChild(manifestLink);
+      } catch (e) {}
+
+      // --- 2. Application State & Triple-Engine Sync Configuration ---
+      const VALID_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      const PEER_PREFIX = 'fleeece-v4-';
+      const MQTT_BROKERS = [
+        'wss://broker.emqx.io:8084/mqtt',
+        'wss://broker.hivemq.com:8884/mqtt',
+        'wss://test.mosquitto.org:8081/mqtt'
+      ];
+      const DIRECTIONS = [
+        'Tilt left', 'Tilt right', 'Chin up', 'Chin down',
+        'Step left', 'Step right', 'Come closer', 'Step back',
+        'Smile', 'Hold still', 'Relax hands', 'Perfect!'
+      ];
+
+      const PEER_ICE_CONFIG = {
+        debug: 0,
+        config: {
+          sdpSemantics: 'unified-plan',
+          iceCandidatePoolSize: 4,
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            {
+              urls: [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443',
+                'turn:openrelay.metered.ca:443?transport=tcp'
+              ],
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            }
+          ]
+        }
+      };
+
+      const state = {
+        currentScreen: 'start',
+        role: null,
+        deviceId: 'dev_' + Math.random().toString(36).substring(2, 9),
+        imageQuality: 0.95,
+        oledMode: true,
+        // Camera & Media
+        localStream: null,
+        facingMode: 'environment',
+        isScreenSharing: false,
+        torchOn: false,
+        syntheticAnimId: null,
+        // Multi-Transport State
+        peer: null,
+        myPeerId: null,
+        remotePeerId: null,
+        dataConn: null,
+        mediaCall: null,
+        mqttClients: [],
+        mqttConnected: false,
+        localBC: null,
+        httpPollTimerId: null,
+        heartbeatTimerId: null,
+        lastHttpMsgId: '',
+        sessionCode: 'ROOMA',
+        cueTimeoutId: null,
+        joinTimeoutId: null,
+        frameRelayIntervalId: null,
+        poserHasNativeVideo: false,
+        poserVideoOverrideActive: false,
+        isDemoConnection: false,
+        // Solo Overlay Transform State
+        overlayLoaded: false,
+        overlayOpacity: 0.5,
+        overlayX: 0,
+        overlayY: 0,
+        overlayScale: 1,
+        overlayRotation: 0,
+        lastCapturedDataUrl: null,
+        lastCapturedFilename: ''
+      };
+
+      // --- 3. DOM Elements ---
+      const el = {
+        appShell: document.getElementById('appShell'),
+        toastContainer: document.getElementById('toastContainer'),
+        httpsWarningBanner: document.getElementById('httpsWarningBanner'),
+        dismissHttpsBtn: document.getElementById('dismissHttpsBtn'),
+        // Screens
+        screenStart: document.getElementById('screenStart'),
+        screenLanding: document.getElementById('screenLanding'),
+        screenPhotographer: document.getElementById('screenPhotographer'),
+        screenJoin: document.getElementById('screenJoin'),
+        screenPoser: document.getElementById('screenPoser'),
+        screenSolo: document.getElementById('screenSolo'),
+        // Start & Landing
+        btnStartApp: document.getElementById('btnStartApp'),
+        btnOpenSettings: document.getElementById('btnOpenSettings'),
+        btnRolePhotographer: document.getElementById('btnRolePhotographer'),
+        btnRolePoser: document.getElementById('btnRolePoser'),
+        btnRoleSolo: document.getElementById('btnRoleSolo'),
+        // Photographer
+        photographerVideo: document.getElementById('photographerVideo'),
+        photographerCastOverlay: document.getElementById('photographerCastOverlay'),
+        photographerCodeDisplay: document.getElementById('photographerCodeDisplay'),
+        btnCopySessionCode: document.getElementById('btnCopySessionCode'),
+        btnPhotographerFlipCam: document.getElementById('btnPhotographerFlipCam'),
+        btnPhotographerShareScreen: document.getElementById('btnPhotographerShareScreen'),
+        btnPhotographerCopyLink: document.getElementById('btnPhotographerCopyLink'),
+        photographerStatusDot: document.getElementById('photographerStatusDot'),
+        photographerStatusText: document.getElementById('photographerStatusText'),
+        photographerStreamBadge: document.getElementById('photographerStreamBadge'),
+        btnClearPhotographerCast: document.getElementById('btnClearPhotographerCast'),
+        btnSimulatePoserCue: document.getElementById('btnSimulatePoserCue'),
+        photographerCueBox: document.getElementById('photographerCueBox'),
+        photographerCueText: document.getElementById('photographerCueText'),
+        btnPhotographerEnd: document.getElementById('btnPhotographerEnd'),
+        btnPhotographerSnap: document.getElementById('btnPhotographerSnap'),
+        // Join & Poser
+        btnJoinBack: document.getElementById('btnJoinBack'),
+        btnPoserDirectScreenShare: document.getElementById('btnPoserDirectScreenShare'),
+        joinCodeInput: document.getElementById('joinCodeInput'),
+        joinStatusStep: document.getElementById('joinStatusStep'),
+        joinErrorBox: document.getElementById('joinErrorBox'),
+        btnJoinConnect: document.getElementById('btnJoinConnect'),
+        btnJoinDemoMode: document.getElementById('btnJoinDemoMode'),
+        poserFallbackImg: document.getElementById('poserFallbackImg'),
+        poserRemoteVideo: document.getElementById('poserRemoteVideo'),
+        poserLocalGhostImg: document.getElementById('poserLocalGhostImg'),
+        poserConnectingOverlay: document.getElementById('poserConnectingOverlay'),
+        poserConnectingTitle: document.getElementById('poserConnectingTitle'),
+        poserConnectingHint: document.getElementById('poserConnectingHint'),
+        poserActiveRoomLabel: document.getElementById('poserActiveRoomLabel'),
+        btnQuickPoserScreenShare: document.getElementById('btnQuickPoserScreenShare'),
+        btnQuickPoserMyCam: document.getElementById('btnQuickPoserMyCam'),
+        btnQuickPoserUploadPose: document.getElementById('btnQuickPoserUploadPose'),
+        btnQuickPoserNativeCall: document.getElementById('btnQuickPoserNativeCall'),
+        btnDismissPoserOverlay: document.getElementById('btnDismissPoserOverlay'),
+        btnPoserEnd: document.getElementById('btnPoserEnd'),
+        btnPoserOpenShareHub: document.getElementById('btnPoserOpenShareHub'),
+        poserStatusDot: document.getElementById('poserStatusDot'),
+        poserStatusText: document.getElementById('poserStatusText'),
+        btnBarPoserScreen: document.getElementById('btnBarPoserScreen'),
+        btnBarPoserCam: document.getElementById('btnBarPoserCam'),
+        btnBarPoserPose: document.getElementById('btnBarPoserPose'),
+        btnBarPoserPip: document.getElementById('btnBarPoserPip'),
+        btnBarPoserFlip: document.getElementById('btnBarPoserFlip'),
+        poserSentFeedback: document.getElementById('poserSentFeedback'),
+        poserDirectionGrid: document.getElementById('poserDirectionGrid'),
+        // Share Hub Modal
+        shareHubModal: document.getElementById('shareHubModal'),
+        btnCloseShareHub: document.getElementById('btnCloseShareHub'),
+        btnHubLiveScreenShare: document.getElementById('btnHubLiveScreenShare'),
+        btnHubCastPhoto: document.getElementById('btnHubCastPhoto'),
+        hubCastFileInput: document.getElementById('hubCastFileInput'),
+        btnHubShareMyCamera: document.getElementById('btnHubShareMyCamera'),
+        btnHubFloatPip: document.getElementById('btnHubFloatPip'),
+        // Solo
+        soloUploadStep: document.getElementById('soloUploadStep'),
+        soloCameraStep: document.getElementById('soloCameraStep'),
+        btnSoloUploadBack: document.getElementById('btnSoloUploadBack'),
+        soloDropZone: document.getElementById('soloDropZone'),
+        soloFileInput: document.getElementById('soloFileInput'),
+        btnSamplePortrait: document.getElementById('btnSamplePortrait'),
+        btnSampleArchitecture: document.getElementById('btnSampleArchitecture'),
+        soloViewport: document.getElementById('soloViewport'),
+        soloVideo: document.getElementById('soloVideo'),
+        soloOverlayImg: document.getElementById('soloOverlayImg'),
+        btnSoloExit: document.getElementById('btnSoloExit'),
+        btnSoloChangePhoto: document.getElementById('btnSoloChangePhoto'),
+        btnSoloResetTransform: document.getElementById('btnSoloResetTransform'),
+        btnSoloFlash: document.getElementById('btnSoloFlash'),
+        btnSoloFlipCam: document.getElementById('btnSoloFlipCam'),
+        soloTransformBadge: document.getElementById('soloTransformBadge'),
+        soloOpacitySlider: document.getElementById('soloOpacitySlider'),
+        soloOpacityValue: document.getElementById('soloOpacityValue'),
+        btnSoloRotateLeft: document.getElementById('btnSoloRotateLeft'),
+        btnSoloShutter: document.getElementById('btnSoloShutter'),
+        btnSoloRotateRight: document.getElementById('btnSoloRotateRight'),
+        // Capture Modal
+        captureModal: document.getElementById('captureModal'),
+        captureFilenameLabel: document.getElementById('captureFilenameLabel'),
+        capturePreviewImg: document.getElementById('capturePreviewImg'),
+        btnCaptureShare: document.getElementById('btnCaptureShare'),
+        btnCaptureRetake: document.getElementById('btnCaptureRetake'),
+        btnCaptureDone: document.getElementById('btnCaptureDone'),
+        // Settings Modal
+        settingsModal: document.getElementById('settingsModal'),
+        btnCloseSettings: document.getElementById('btnCloseSettings'),
+        settingQuality: document.getElementById('settingQuality'),
+        btnToggleOled: document.getElementById('btnToggleOled'),
+        // Canvases
+        captureCanvas: document.getElementById('captureCanvas'),
+        syntheticCamCanvas: document.getElementById('syntheticCamCanvas'),
+        frameRelayCanvas: document.getElementById('frameRelayCanvas')
+      };
+
+      // --- 4. Utility & Toast Helpers ---
+      function showToast(message, type) {
+        const toast = document.createElement('div');
+        const bgClass = type === 'error'
+          ? 'bg-rose-600/95 border-rose-400/50'
+          : type === 'success'
+            ? 'bg-emerald-600/95 border-emerald-400/50'
+            : 'bg-zinc-900/95 border-pink-500/40';
+        toast.className = 'px-4 py-2.5 rounded-2xl border text-xs font-semibold text-white shadow-xl backdrop-blur-md transition-all duration-200 ' + bgClass;
+        toast.textContent = message;
+        el.toastContainer.appendChild(toast);
+        setTimeout(function () {
+          toast.style.opacity = '0';
+          setTimeout(function () {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+          }, 220);
+        }, 2800);
+      }
+
+      function checkHttpsOrigin() {
+        const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        const isSecure = window.isSecureContext || location.protocol === 'https:' || isLocal;
+        if (!isSecure) {
+          el.httpsWarningBanner.classList.remove('hidden');
+        }
+      }
+
+      function showScreen(screenName) {
+        state.currentScreen = screenName;
+        const map = {
+          start: el.screenStart,
+          landing: el.screenLanding,
+          photographer: el.screenPhotographer,
+          join: el.screenJoin,
+          poser: el.screenPoser,
+          solo: el.screenSolo
+        };
+        Object.keys(map).forEach(function (key) {
+          if (key === screenName) {
+            map[key].classList.remove('hidden');
+          } else {
+            map[key].classList.add('hidden');
+          }
+        });
+      }
+
+      function highlightRoomButtons(code) {
+        document.querySelectorAll('.photo-quick-room').forEach(function (b) {
+          b.className = b.dataset.quickRoom === code
+            ? 'photo-quick-room px-2.5 py-1 rounded-lg bg-pink-500 text-white text-xs font-bold transition'
+            : 'photo-quick-room px-2.5 py-1 rounded-lg bg-white/10 text-zinc-300 text-xs font-bold transition';
+        });
+        document.querySelectorAll('.live-poser-room').forEach(function (b) {
+          b.className = b.dataset.livePoserRoom === code
+            ? 'live-poser-room px-2 py-1 rounded-lg bg-pink-500 text-white text-[10px] font-extrabold'
+            : 'live-poser-room px-2 py-1 rounded-lg bg-white/10 text-zinc-300 text-[10px] font-extrabold';
+        });
+      }
+
+      // --- 5. Camera & Synthetic Fallback Stream Management ---
+      function createSyntheticStream(facingLabel) {
+        if (state.syntheticAnimId) {
+          cancelAnimationFrame(state.syntheticAnimId);
+          state.syntheticAnimId = null;
+        }
+        const canvas = el.syntheticCamCanvas;
+        const ctx = canvas.getContext('2d');
+        let tick = 0;
+
+        function drawFrame() {
+          tick += 0.025;
+          const w = canvas.width;
+          const h = canvas.height;
+
+          const grad = ctx.createLinearGradient(0, 0, w, h);
+          if (facingLabel === 'user') {
+            grad.addColorStop(0, '#1e1b4b');
+            grad.addColorStop(0.5, '#3b0764');
+            grad.addColorStop(1, '#09090b');
+          } else {
+            grad.addColorStop(0, '#0f172a');
+            grad.addColorStop(0.5, '#1e293b');
+            grad.addColorStop(1, '#09090b');
+          }
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, w, h);
+
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(w / 3, 0); ctx.lineTo(w / 3, h);
+          ctx.moveTo((w * 2) / 3, 0); ctx.lineTo((w * 2) / 3, h);
+          ctx.moveTo(0, h / 3); ctx.lineTo(w, h / 3);
+          ctx.moveTo(0, (h * 2) / 3); ctx.lineTo(w, (h * 2) / 3);
+          ctx.stroke();
+
+          const cx = w / 2 + Math.sin(tick) * 28;
+          const cy = h * 0.52 + Math.cos(tick * 0.8) * 14;
+
+          const halo = ctx.createRadialGradient(cx, cy - 90, 20, cx, cy - 90, 220);
+          halo.addColorStop(0, 'rgba(236, 72, 153, 0.28)');
+          halo.addColorStop(1, 'rgba(236, 72, 153, 0)');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(cx, cy - 90, 220, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+          ctx.strokeStyle = 'rgba(236, 72, 153, 0.75)';
+          ctx.lineWidth = 3;
+
+          ctx.beginPath();
+          ctx.arc(cx, cy - 130, 58, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.roundRect(cx - 130, cy - 55, 260, 270, [75, 75, 24, 24]);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+          ctx.font = '600 20px Inter, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(
+            'LIVE VIEWFINDER (' + (facingLabel === 'user' ? 'FRONT' : 'REAR') + ')',
+            w / 2,
+            h - 60
+          );
+
+          state.syntheticAnimId = requestAnimationFrame(drawFrame);
+        }
+
+        drawFrame();
+        return canvas.captureStream ? canvas.captureStream(30) : null;
+      }
+
+      async function requestCameraStream(preferredFacingMode) {
+        const mode = preferredFacingMode || state.facingMode || 'environment';
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                facingMode: { ideal: mode },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+              },
+              audio: false
+            });
+            state.facingMode = mode;
+            state.isScreenSharing = false;
+            return { stream: stream, isSynthetic: false };
+          } catch (err) {
+            try {
+              const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false
+              });
+              state.facingMode = mode;
+              state.isScreenSharing = false;
+              return { stream: fallbackStream, isSynthetic: false };
+            } catch (err2) {
+              const syn = createSyntheticStream(mode);
+              state.facingMode = mode;
+              state.isScreenSharing = false;
+              return { stream: syn, isSynthetic: true };
+            }
+          }
+        } else {
+          const syn = createSyntheticStream(mode);
+          state.facingMode = mode;
+          state.isScreenSharing = false;
+          return { stream: syn, isSynthetic: true };
+        }
+      }
+
+      function stopTransportsOnly() {
+        if (state.frameRelayIntervalId) {
+          clearInterval(state.frameRelayIntervalId);
+          state.frameRelayIntervalId = null;
+        }
+        if (state.heartbeatTimerId) {
+          clearInterval(state.heartbeatTimerId);
+          state.heartbeatTimerId = null;
+        }
+        if (state.httpPollTimerId) {
+          clearInterval(state.httpPollTimerId);
+          state.httpPollTimerId = null;
+        }
+        if (state.mediaCall) {
+          try { state.mediaCall.close(); } catch (e) {}
+          state.mediaCall = null;
+        }
+        if (state.dataConn) {
+          try { state.dataConn.close(); } catch (e) {}
+          state.dataConn = null;
+        }
+        if (state.peer) {
+          try { state.peer.destroy(); } catch (e) {}
+          state.peer = null;
+        }
+        if (state.mqttClients && state.mqttClients.length) {
+          state.mqttClients.forEach(function (c) {
+            try { c.end(true); } catch (e) {}
+          });
+          state.mqttClients = [];
+        }
+        if (state.localBC) {
+          try { state.localBC.close(); } catch (e) {}
+          state.localBC = null;
+        }
+        state.mqttConnected = false;
+        state.myPeerId = null;
+        state.remotePeerId = null;
+        state.poserHasNativeVideo = false;
+      }
+
+      function stopAllMediaAndPeers() {
+        stopTransportsOnly();
+        if (state.syntheticAnimId) {
+          cancelAnimationFrame(state.syntheticAnimId);
+          state.syntheticAnimId = null;
+        }
+        if (state.localStream) {
+          state.localStream.getTracks().forEach(function (t) {
+            try { t.stop(); } catch (e) {}
+          });
+          state.localStream = null;
+        }
+        if (el.photographerVideo.srcObject) {
+          el.photographerVideo.srcObject = null;
+        }
+        el.photographerCastOverlay.classList.add('hidden');
+        el.photographerCastOverlay.removeAttribute('src');
+        el.btnClearPhotographerCast.classList.add('hidden');
+        if (el.poserRemoteVideo.srcObject) {
+          el.poserRemoteVideo.srcObject = null;
+        }
+        el.poserFallbackImg.classList.add('hidden');
+        el.poserFallbackImg.removeAttribute('src');
+        el.poserLocalGhostImg.classList.add('hidden');
+        el.poserLocalGhostImg.removeAttribute('src');
+        if (el.soloVideo.srcObject) {
+          el.soloVideo.srcObject = null;
+        }
+        if (state.cueTimeoutId) {
+          clearTimeout(state.cueTimeoutId);
+          state.cueTimeoutId = null;
+        }
+        if (state.joinTimeoutId) {
+          clearTimeout(state.joinTimeoutId);
+          state.joinTimeoutId = null;
+        }
+        state.poserVideoOverrideActive = false;
+        state.isDemoConnection = false;
+        state.isScreenSharing = false;
+        state.torchOn = false;
+      }
+
+      function replaceOutgoingPeerVideoTrack(newStream) {
+        if (!state.mediaCall || !state.mediaCall.peerConnection) return;
+        const newVideoTrack = newStream.getVideoTracks()[0];
+        if (!newVideoTrack) return;
+        const senders = state.mediaCall.peerConnection.getSenders();
+        senders.forEach(function (sender) {
+          if (sender.track && sender.track.kind === 'video') {
+            sender.replaceTrack(newVideoTrack).catch(function () {});
+          }
+        });
+      }
+
+      // --- 6. TRIPLE-ENGINE ROOM SYNC (Multi-Broker WSS + HTTPS Port-443 Fetch Relay + WebRTC with Collision Recovery) ---
+      function getRoomTopic(code, sub) {
+        return 'fleeece/v4/' + code + '/' + sub;
+      }
+
+      function getHttpRelayUrl(code, isPoll) {
+        const topic = 'fleeece_v4_room_' + code.toLowerCase();
+        return isPoll
+          ? 'https://ntfy.sh/' + topic + '/json?poll=1&since=15s'
+          : 'https://ntfy.sh/' + topic;
+      }
+
+      function sendRoomMessage(payload) {
+        payload.deviceId = state.deviceId;
+        payload.myPeerId = state.myPeerId || '';
+        payload.ts = Date.now();
+        const jsonStr = JSON.stringify(payload);
+
+        // 1. PeerJS WebRTC DataChannel
+        if (state.dataConn && state.dataConn.open) {
+          try { state.dataConn.send(payload); } catch (e) {}
+        }
+
+        // 2. All connected MQTT WSS brokers
+        if (state.mqttClients && state.mqttClients.length && state.sessionCode) {
+          const subTopic = payload.type === 'frame' ? 'frame' : 'control';
+          state.mqttClients.forEach(function (client) {
+            if (client && client.connected) {
+              try {
+                client.publish(getRoomTopic(state.sessionCode, subTopic), jsonStr, { qos: 0 });
+              } catch (e) {}
+            }
+          });
+        }
+
+        // 3. Same-browser BroadcastChannel
+        if (state.localBC) {
+          try { state.localBC.postMessage(payload); } catch (e) {}
+        }
+
+        // 4. HTTPS Port-443 Fetch Relay for control messages (cues, peer discovery, cast images)
+        // Works even inside Canvas preview iframe where WebSockets are blocked!
+        if (payload.type !== 'frame' && state.sessionCode) {
+          try {
+            fetch(getHttpRelayUrl(state.sessionCode, false), {
+              method: 'POST',
+              body: jsonStr
+            }).catch(function () {});
+          } catch (e) {}
+        }
+      }
+
+      function startUnifiedRoomSync(code, onMessageCallback) {
+        // A. Local BroadcastChannel
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            if (state.localBC) state.localBC.close();
+            state.localBC = new BroadcastChannel('fleeece_bc_' + code);
+            state.localBC.onmessage = function (ev) {
+              if (ev.data && ev.data.deviceId !== state.deviceId) {
+                onMessageCallback(ev.data);
+              }
+            };
+          }
+        } catch (e) {}
+
+        // B. Simultaneous Multi-Broker MQTT over WSS (races EMQX, HiveMQ, Mosquitto in parallel!)
+        if (typeof mqtt !== 'undefined') {
+          MQTT_BROKERS.forEach(function (brokerUrl) {
+            try {
+              const client = mqtt.connect(brokerUrl, {
+                clientId: 'fl_' + state.deviceId + '_' + Math.random().toString(36).substring(2, 6),
+                connectTimeout: 4500,
+                reconnectPeriod: 3000,
+                clean: true
+              });
+              state.mqttClients.push(client);
+
+              client.on('connect', function () {
+                state.mqttConnected = true;
+                client.subscribe(getRoomTopic(code, 'control'), { qos: 0 });
+                client.subscribe(getRoomTopic(code, 'frame'), { qos: 0 });
+              });
+
+              client.on('message', function (topic, messageBuffer) {
+                try {
+                  const parsed = JSON.parse(messageBuffer.toString());
+                  if (parsed && parsed.deviceId !== state.deviceId) {
+                    onMessageCallback(parsed);
+                  }
+                } catch (e) {}
+              });
+            } catch (e) {}
+          });
+        }
+
+        // C. HTTPS Port-443 Fetch Polling (bypasses WebSocket blocks in Canvas or strict corporate/mobile firewalls)
+        const seenMsgIds = {};
+        state.httpPollTimerId = setInterval(function () {
+          if (!state.sessionCode) return;
+          try {
+            fetch(getHttpRelayUrl(state.sessionCode, true))
+              .then(function (res) { return res.text(); })
+              .then(function (text) {
+                if (!text) return;
+                const lines = text.trim().split('\n');
+                lines.forEach(function (line) {
+                  try {
+                    const env = JSON.parse(line);
+                    if (!env || !env.id || seenMsgIds[env.id] || env.event !== 'message' || !env.message) return;
+                    seenMsgIds[env.id] = true;
+                    const inner = JSON.parse(env.message);
+                    if (inner && inner.deviceId !== state.deviceId && (Date.now() - (inner.ts || 0) < 20000)) {
+                      onMessageCallback(inner);
+                    }
+                  } catch (e) {}
+                });
+              })
+              .catch(function () {});
+          } catch (e) {}
+        }, 2200);
+
+        // D. Continuous Auto-Discovery Heartbeat every 2.5 seconds (so device order never matters!)
+        state.heartbeatTimerId = setInterval(function () {
+          sendRoomMessage({
+            type: state.role === 'photographer' ? 'photographer-heartbeat' : 'poser-heartbeat',
+            senderRole: state.role
+          });
+        }, 2500);
+      }
+
+      function startLiveFrameBroadcaster(sourceVideoEl) {
+        if (state.frameRelayIntervalId) {
+          clearInterval(state.frameRelayIntervalId);
+        }
+        const relayCanvas = el.frameRelayCanvas;
+        const ctx = relayCanvas.getContext('2d');
+
+        state.frameRelayIntervalId = setInterval(function () {
+          const video = sourceVideoEl || el.photographerVideo;
+          if (!video || video.readyState < 2) return;
+          if (state.poserHasNativeVideo && !state.poserVideoOverrideActive) return;
+
+          try {
+            const vw = video.videoWidth || 640;
+            const vh = video.videoHeight || 480;
+            relayCanvas.width = 240;
+            relayCanvas.height = Math.round((240 * vh) / vw) || 180;
+            ctx.drawImage(video, 0, 0, relayCanvas.width, relayCanvas.height);
+            const jpgData = relayCanvas.toDataURL('image/jpeg', 0.36);
+            sendRoomMessage({
+              type: 'frame',
+              senderRole: state.role,
+              data: jpgData
+            });
+          } catch (e) {}
+        }, 240);
+      }
+
+      // --- 7. FEATURE 1A: PHOTOGRAPHER FLOW (WITH AUTO-COLLISION RECOVERY) ---
+      function setPhotographerStatus(statusMode) {
+        if (statusMode === 'live') {
+          el.photographerStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+          el.photographerStatusText.textContent = 'Live';
+        } else {
+          el.photographerStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
+          el.photographerStatusText.textContent = 'Waiting';
+        }
+      }
+
+      function displayIncomingCue(cueText) {
+        if (!cueText) return;
+        el.photographerCueText.textContent = cueText;
+        el.photographerCueBox.classList.remove('hidden');
+        el.photographerCueBox.classList.remove('cue-pop');
+        void el.photographerCueBox.offsetWidth;
+        el.photographerCueBox.classList.add('cue-pop');
+
+        if (state.cueTimeoutId) clearTimeout(state.cueTimeoutId);
+        state.cueTimeoutId = setTimeout(function () {
+          el.photographerCueBox.classList.add('hidden');
+        }, 2100);
+      }
+
+      function connectPhotographerToPoserPeer(poserPeerId) {
+        if (!poserPeerId || !state.peer || state.peer.destroyed) return;
+        if (state.remotePeerId === poserPeerId && state.mediaCall) return;
+        state.remotePeerId = poserPeerId;
+
+        if (state.localStream) {
+          try {
+            const call = state.peer.call(poserPeerId, state.localStream);
+            if (call) state.mediaCall = call;
+          } catch (e) {}
+        }
+        if (!state.dataConn || !state.dataConn.open) {
+          try {
+            const conn = state.peer.connect(poserPeerId, { reliable: true });
+            state.dataConn = conn;
+            conn.on('data', handlePhotographerIncomingPayload);
+          } catch (e) {}
+        }
+      }
+
+      function handlePhotographerIncomingPayload(payload) {
+        if (!payload) return;
+        if (typeof payload === 'string') {
+          displayIncomingCue(payload);
+          return;
+        }
+        if (payload.myPeerId && payload.senderRole === 'poser') {
+          connectPhotographerToPoserPeer(payload.myPeerId);
+        }
+        if (payload.type === 'cue') {
+          setPhotographerStatus('live');
+          displayIncomingCue(payload.text);
+        } else if (payload.type === 'poser-hello' || payload.type === 'poser-heartbeat') {
+          setPhotographerStatus('live');
+          el.photographerStreamBadge.textContent = '🟢 Poser Connected in ' + state.sessionCode;
+          sendRoomMessage({ type: 'photographer-ack', senderRole: 'photographer' });
+        } else if (payload.type === 'cast-image' && payload.data) {
+          el.photographerCastOverlay.src = payload.data;
+          el.photographerCastOverlay.classList.remove('hidden');
+          el.btnClearPhotographerCast.classList.remove('hidden');
+          showToast('Poser shared a reference pose overlay!', 'success');
+        } else if (payload.type === 'frame' && payload.senderRole === 'poser' && payload.data) {
+          el.photographerCastOverlay.src = payload.data;
+          el.photographerCastOverlay.style.opacity = '0.85';
+          el.photographerCastOverlay.classList.remove('hidden');
+          el.btnClearPhotographerCast.classList.remove('hidden');
+        } else if (payload.type === 'native-video-ok') {
+          state.poserHasNativeVideo = true;
+        } else if (payload.type === 'end') {
+          showToast('Poser ended the session.', 'info');
+          endPhotographerSession();
+        }
+      }
+
+      async function startPhotographerSession(chosenRoomCode) {
+        const keepStream = state.localStream && state.currentScreen === 'photographer';
+        const savedStream = keepStream ? state.localStream : null;
+
+        if (!keepStream) {
+          stopAllMediaAndPeers();
+        } else {
+          stopTransportsOnly();
+        }
+
+        state.role = 'photographer';
+        state.facingMode = state.facingMode || 'environment';
+        state.sessionCode = chosenRoomCode || 'ROOMA';
+        highlightRoomButtons(state.sessionCode);
+        el.photographerCodeDisplay.textContent = state.sessionCode;
+        setPhotographerStatus('ready');
+        el.photographerCueBox.classList.add('hidden');
+        el.photographerStreamBadge.textContent =
+          'Broadcasting in ' + state.sessionCode + ' • Open Poser on Device 2';
+        showScreen('photographer');
+
+        if (!savedStream) {
+          const camResult = await requestCameraStream('environment');
+          state.localStream = camResult.stream;
+          el.photographerVideo.srcObject = state.localStream;
+          el.photographerVideo.play().catch(function () {});
+        } else {
+          state.localStream = savedStream;
+        }
+
+        // 1. Start Triple-Engine Room Sync & Frame Broadcaster immediately
+        startUnifiedRoomSync(state.sessionCode, handlePhotographerIncomingPayload);
+        startLiveFrameBroadcaster(el.photographerVideo);
+
+        // 2. Initialize PeerJS with automatic slot fallback if ID is still held by an old refresh
+        if (typeof Peer !== 'undefined') {
+          let slot = 0;
+          function tryCreatePhotographerPeer() {
+            const candidateId = slot === 0
+              ? PEER_PREFIX + state.sessionCode
+              : PEER_PREFIX + state.sessionCode + '-' + slot;
+            try {
+              const peer = new Peer(candidateId, PEER_ICE_CONFIG);
+              state.peer = peer;
+
+              peer.on('open', function (id) {
+                state.myPeerId = id;
+                sendRoomMessage({ type: 'photographer-heartbeat', senderRole: 'photographer' });
+              });
+
+              peer.on('connection', function (conn) {
+                state.dataConn = conn;
+                state.poserHasNativeVideo = false;
+                conn.on('open', function () {
+                  setPhotographerStatus('live');
+                  el.photographerStreamBadge.textContent = '🟢 Connected to Poser • Live';
+                  if (state.localStream) {
+                    try {
+                      const call = peer.call(conn.peer, state.localStream);
+                      if (call) state.mediaCall = call;
+                    } catch (e) {}
+                  }
+                });
+                conn.on('data', handlePhotographerIncomingPayload);
+              });
+
+              peer.on('call', function (incomingCall) {
+                state.mediaCall = incomingCall;
+                if (state.localStream) {
+                  incomingCall.answer(state.localStream);
+                  setPhotographerStatus('live');
+                }
+              });
+
+              peer.on('error', function (err) {
+                if (err && err.type === 'unavailable-id' && slot < 5) {
+                  slot++;
+                  try { peer.destroy(); } catch (e) {}
+                  tryCreatePhotographerPeer();
+                }
+              });
+            } catch (e) {}
+          }
+          tryCreatePhotographerPeer();
+        }
+      }
+
+      async function flipPhotographerCamera() {
+        const previousFacing = state.facingMode;
+        const targetFacing = previousFacing === 'environment' ? 'user' : 'environment';
+
+        const oldStream = state.localStream;
+        const result = await requestCameraStream(targetFacing);
+        if (!result || !result.stream) {
+          showToast('Could not open other camera, restoring previous.', 'error');
+          return;
+        }
+
+        state.localStream = result.stream;
+        el.photographerVideo.srcObject = state.localStream;
+        el.photographerVideo.play().catch(function () {});
+        replaceOutgoingPeerVideoTrack(state.localStream);
+
+        if (oldStream && oldStream !== state.localStream) {
+          oldStream.getTracks().forEach(function (t) {
+            try { t.stop(); } catch (e) {}
+          });
+        }
+
+        const label = targetFacing === 'user' ? 'Front Camera' : 'Rear Camera';
+        el.photographerStreamBadge.textContent = label + ' • ' + state.sessionCode;
+        showToast('Switched to ' + label, 'info');
+      }
+
+      function endPhotographerSession() {
+        sendRoomMessage({ type: 'end', senderRole: 'photographer' });
+        stopAllMediaAndPeers();
+        showScreen('landing');
+      }
+
+      // --- 8. FEATURE 1B: POSER FLOW + AUTO-DISCOVERY & FLOATING PIP ---
+      function renderPoserDirectionButtons() {
+        el.poserDirectionGrid.innerHTML = '';
+        DIRECTIONS.forEach(function (label) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.dataset.cue = label;
+          btn.className =
+            'poser-cue-btn min-h-[48px] px-2 py-2 rounded-xl bg-zinc-900/90 border border-white/15 text-xs font-bold text-white leading-tight transition active:scale-95';
+          btn.textContent = label;
+          btn.addEventListener('click', function () {
+            sendPoserDirection(label, btn);
+          });
+          el.poserDirectionGrid.appendChild(btn);
+        });
+      }
+
+      function setPoserLiveState(isLive) {
+        if (isLive) {
+          el.poserStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+          el.poserStatusText.textContent = 'Live';
+        } else {
+          el.poserStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
+          el.poserStatusText.textContent = 'Ready';
+        }
+      }
+
+      function sendPoserDirection(cueText, btnElement) {
+        btnElement.classList.add('gradient-bg', 'border-pink-300');
+        setTimeout(function () {
+          btnElement.classList.remove('gradient-bg', 'border-pink-300');
+        }, 260);
+
+        el.poserSentFeedback.textContent = 'Sent: ' + cueText;
+        el.poserSentFeedback.classList.remove('hidden');
+        setTimeout(function () {
+          el.poserSentFeedback.classList.add('hidden');
+        }, 1200);
+
+        sendRoomMessage({
+          type: 'cue',
+          senderRole: 'poser',
+          text: cueText
+        });
+      }
+
+      function createSilentEmptyMediaStream() {
+        const blankCanvas = document.createElement('canvas');
+        blankCanvas.width = 2;
+        blankCanvas.height = 2;
+        const ctx = blankCanvas.getContext('2d');
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, 2, 2);
+        return blankCanvas.captureStream ? blankCanvas.captureStream(1) : new MediaStream();
+      }
+
+      function attachRemoteVideoToPoser(remoteStream) {
+        if (!remoteStream) return;
+        el.poserRemoteVideo.srcObject = remoteStream;
+        el.poserRemoteVideo.muted = true;
+        const playPromise = el.poserRemoteVideo.play();
+        if (playPromise && playPromise.then) {
+          playPromise.then(function () {
+            el.poserConnectingOverlay.classList.add('hidden');
+            setPoserLiveState(true);
+            sendRoomMessage({ type: 'native-video-ok', senderRole: 'poser' });
+          }).catch(function () {});
+        }
+        el.poserConnectingOverlay.classList.add('hidden');
+        setPoserLiveState(true);
+      }
+
+      function connectPoserToPhotographerPeer(photoPeerId) {
+        if (!photoPeerId || !state.peer || state.peer.destroyed) return;
+        if (state.remotePeerId === photoPeerId && state.dataConn && state.dataConn.open) return;
+        state.remotePeerId = photoPeerId;
+
+        try {
+          const conn = state.peer.connect(photoPeerId, { reliable: true, serialization: 'json' });
+          state.dataConn = conn;
+          conn.on('open', function () {
+            el.poserConnectingOverlay.classList.add('hidden');
+            setPoserLiveState(true);
+            conn.send({ type: 'poser-hello', senderRole: 'poser', myPeerId: state.myPeerId });
+          });
+          conn.on('data', handlePoserIncomingPayload);
+        } catch (e) {}
+
+        try {
+          const silentStream = createSilentEmptyMediaStream();
+          const call = state.peer.call(photoPeerId, silentStream);
+          if (call) {
+            state.mediaCall = call;
+            call.on('stream', function (remoteStream) {
+              attachRemoteVideoToPoser(remoteStream);
+            });
+          }
+        } catch (e) {}
+      }
+
+      function handlePoserIncomingPayload(payload) {
+        if (!payload) return;
+        if (payload.myPeerId && payload.senderRole === 'photographer') {
+          connectPoserToPhotographerPeer(payload.myPeerId);
+        }
+        if (payload.type === 'frame' && payload.data && !state.poserVideoOverrideActive) {
+          el.poserFallbackImg.src = payload.data;
+          el.poserFallbackImg.classList.remove('hidden');
+          el.poserConnectingOverlay.classList.add('hidden');
+          setPoserLiveState(true);
+        } else if (payload.type === 'photographer-ack' || payload.type === 'photographer-heartbeat') {
+          setPoserLiveState(true);
+        } else if (payload.type === 'cast-image' && payload.data) {
+          el.poserLocalGhostImg.src = payload.data;
+          el.poserLocalGhostImg.classList.remove('hidden');
+          el.poserConnectingOverlay.classList.add('hidden');
+          showToast('Photographer shared a pose guide!', 'info');
+        } else if (payload.type === 'end') {
+          showToast('Photographer ended the session.', 'info');
+          stopAllMediaAndPeers();
+          showScreen('landing');
+        }
+      }
+
+      function joinPhotographerSession(rawCode) {
+        stopTransportsOnly();
+        state.role = 'poser';
+        el.joinErrorBox.classList.add('hidden');
+
+        const code = (rawCode || 'ROOMA').toUpperCase().trim();
+        state.sessionCode = code;
+        highlightRoomButtons(code);
+        el.poserActiveRoomLabel.textContent = code;
+
+        if (!state.poserVideoOverrideActive) {
+          el.poserConnectingOverlay.classList.remove('hidden');
+        }
+        setPoserLiveState(true);
+        showScreen('poser');
+
+        // 1. Start Unified Room Sync (MQTT WSS + HTTPS Port-443 Fetch + BroadcastChannel)
+        startUnifiedRoomSync(code, handlePoserIncomingPayload);
+        sendRoomMessage({ type: 'poser-hello', senderRole: 'poser' });
+
+        // 2. Initialize PeerJS & try direct connection to default Photographer ID + discovered ID
+        if (typeof Peer !== 'undefined') {
+          try {
+            const peer = new Peer(PEER_ICE_CONFIG);
+            state.peer = peer;
+
+            peer.on('open', function (id) {
+              state.myPeerId = id;
+              sendRoomMessage({ type: 'poser-hello', senderRole: 'poser' });
+              connectPoserToPhotographerPeer(PEER_PREFIX + code);
+            });
+
+            peer.on('call', function (incomingCall) {
+              state.mediaCall = incomingCall;
+              const silentStream = createSilentEmptyMediaStream();
+              incomingCall.answer(silentStream);
+
+              incomingCall.on('stream', function (remoteStream) {
+                attachRemoteVideoToPoser(remoteStream);
+              });
+
+              if (incomingCall.peerConnection) {
+                incomingCall.peerConnection.addEventListener('track', function (evt) {
+                  if (evt.streams && evt.streams[0]) {
+                    attachRemoteVideoToPoser(evt.streams[0]);
+                  }
+                });
+              }
+            });
+          } catch (e) {}
+        }
+      }
+
+      // --- 9. ZERO-PROBLEM SCREEN SHARE, VIDEO/PHOTO CAST, MIRROR CAMERA & FLOATING PIP ---
+      async function startEasyLiveScreenShare() {
+        el.shareHubModal.classList.add('hidden');
+
+        // Check if desktop getDisplayMedia is available
+        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+          try {
+            const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+            state.isScreenSharing = true;
+
+            if (state.role === 'photographer') {
+              const oldStream = state.localStream;
+              state.localStream = displayStream;
+              el.photographerVideo.srcObject = displayStream;
+              el.photographerVideo.play().catch(function () {});
+              replaceOutgoingPeerVideoTrack(displayStream);
+              state.poserHasNativeVideo = false;
+              startLiveFrameBroadcaster(el.photographerVideo);
+              el.photographerStreamBadge.textContent = 'Sharing Screen Live to Poser';
+              if (oldStream) {
+                oldStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+              }
+            } else {
+              state.poserVideoOverrideActive = true;
+              if (state.localStream) {
+                state.localStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+              }
+              state.localStream = displayStream;
+              el.poserRemoteVideo.srcObject = displayStream;
+              el.poserRemoteVideo.play().catch(function () {});
+              el.poserConnectingOverlay.classList.add('hidden');
+              startLiveFrameBroadcaster(el.poserRemoteVideo);
+            }
+
+            const track = displayStream.getVideoTracks()[0];
+            if (track) {
+              track.onended = function () {
+                state.isScreenSharing = false;
+                state.poserVideoOverrideActive = false;
+                showToast('Screen sharing stopped.', 'info');
+              };
+            }
+            showToast('Live Screen Share active!', 'success');
+            return;
+          } catch (err) {
+            // If blocked by embedded preview iframe policy or user cancelled, fall through to instant camera/media fallback!
+            if (err && err.name !== 'NotAllowedError') {
+              showToast('Opening live camera mirror fallback…', 'info');
+              await startPoserCameraBroadcast('user');
+              return;
+            }
+          }
+        }
+
+        // On mobile phones (or inside restricted iframes where getDisplayMedia is blocked),
+        // open the Share Hub so the user can share a screen-recording video, pose photo, live camera, or Floating PiP in 1 tap!
+        el.shareHubModal.classList.remove('hidden');
+      }
+
+      function handleHubCastFile(file) {
+        el.shareHubModal.classList.add('hidden');
+        if (!file) return;
+
+        // Support BOTH video files (e.g. phone screen recordings!) and images/screenshots!
+        if (file.type.startsWith('video/')) {
+          const videoUrl = URL.createObjectURL(file);
+          if (state.role === 'poser') {
+            state.poserVideoOverrideActive = true;
+            el.poserRemoteVideo.srcObject = null;
+            el.poserRemoteVideo.src = videoUrl;
+            el.poserRemoteVideo.loop = true;
+            el.poserRemoteVideo.muted = true;
+            el.poserRemoteVideo.play().catch(function () {});
+            el.poserConnectingOverlay.classList.add('hidden');
+            startLiveFrameBroadcaster(el.poserRemoteVideo);
+          } else {
+            el.photographerVideo.srcObject = null;
+            el.photographerVideo.src = videoUrl;
+            el.photographerVideo.loop = true;
+            el.photographerVideo.muted = true;
+            el.photographerVideo.play().catch(function () {});
+            startLiveFrameBroadcaster(el.photographerVideo);
+          }
+          showToast('Streaming screen-recording video clip live!', 'success');
+          return;
+        }
+
+        if (!file.type.startsWith('image/')) {
+          showToast('Please select a photo, screenshot, or video clip.', 'error');
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function (evt) {
+          if (!evt.target || !evt.target.result) return;
+          const img = new Image();
+          img.onload = function () {
+            const c = el.frameRelayCanvas;
+            const ctx = c.getContext('2d');
+            c.width = 480;
+            c.height = Math.round((480 * img.height) / img.width) || 640;
+            ctx.drawImage(img, 0, 0, c.width, c.height);
+            const compressed = c.toDataURL('image/jpeg', 0.72);
+
+            sendRoomMessage({
+              type: 'cast-image',
+              senderRole: state.role,
+              data: compressed
+            });
+
+            if (state.role === 'poser') {
+              el.poserLocalGhostImg.src = compressed;
+              el.poserLocalGhostImg.classList.remove('hidden');
+              el.poserConnectingOverlay.classList.add('hidden');
+            } else {
+              el.photographerCastOverlay.src = compressed;
+              el.photographerCastOverlay.classList.remove('hidden');
+              el.btnClearPhotographerCast.classList.remove('hidden');
+            }
+            showToast('Pose screenshot overlaid & beamed to session!', 'success');
+          };
+          img.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+      }
+
+      async function startPoserCameraBroadcast(preferredFacing) {
+        el.shareHubModal.classList.add('hidden');
+        const mode = preferredFacing || 'user';
+        const camRes = await requestCameraStream(mode);
+        if (!camRes || !camRes.stream) return;
+
+        if (state.localStream && state.localStream !== camRes.stream) {
+          state.localStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+        }
+
+        if (state.role === 'poser') {
+          state.poserVideoOverrideActive = true;
+          state.localStream = camRes.stream;
+          el.poserRemoteVideo.removeAttribute('src');
+          el.poserRemoteVideo.srcObject = camRes.stream;
+          el.poserRemoteVideo.play().catch(function () {});
+          el.poserConnectingOverlay.classList.add('hidden');
+          startLiveFrameBroadcaster(el.poserRemoteVideo);
+          showToast('Live Camera Mirror active in Poser mode!', 'success');
+        } else {
+          state.localStream = camRes.stream;
+          el.photographerVideo.removeAttribute('src');
+          el.photographerVideo.srcObject = camRes.stream;
+          el.photographerVideo.play().catch(function () {});
+          startLiveFrameBroadcaster(el.photographerVideo);
+          showToast('Camera stream active!', 'success');
+        }
+      }
+
+      // Floating Picture-in-Picture (PiP) Window so Poser can see the live feed on top of Snapchat / Instagram / Native Camera!
+      async function toggleFloatingPipWindow() {
+        el.shareHubModal.classList.add('hidden');
+        const videoEl = state.role === 'photographer' ? el.photographerVideo : el.poserRemoteVideo;
+
+        // If Poser video doesn't have a stream yet, start mirror/synthetic stream so PiP has an active video track
+        if (!videoEl.srcObject && !videoEl.src) {
+          await startPoserCameraBroadcast('user');
+        }
+
+        try {
+          if (document.pictureInPictureElement) {
+            await document.exitPictureInPicture();
+            showToast('Closed floating PiP window.', 'info');
+            return;
+          }
+          if (videoEl.requestPictureInPicture) {
+            await videoEl.requestPictureInPicture();
+            showToast('Floating window active! You can now switch to any camera app.', 'success');
+            return;
+          }
+          if (videoEl.webkitSetPresentationMode) {
+            videoEl.webkitSetPresentationMode('picture-in-picture');
+            showToast('Floating window active!', 'success');
+            return;
+          }
+        } catch (err) {}
+
+        showToast('Turned on full-screen mirror view (PiP requires playing video in Chrome/Safari).', 'info');
+      }
+
+      function startSimulatedPoserDemo() {
+        stopAllMediaAndPeers();
+        state.role = 'poser';
+        state.isDemoConnection = true;
+        showScreen('poser');
+        el.poserConnectingOverlay.classList.add('hidden');
+        setPoserLiveState(true);
+
+        const demoStream = createSyntheticStream('environment');
+        attachRemoteVideoToPoser(demoStream);
+        showToast('Simulated live stream connected!', 'success');
+      }
+
+      // --- 10. FEATURE 2: SOLO REFERENCE OVERLAY (GHOST CAMERA) ---
+      function resetOverlayTransform() {
+        state.overlayX = 0;
+        state.overlayY = 0;
+        state.overlayScale = 1;
+        state.overlayRotation = 0;
+        state.overlayOpacity = 0.5;
+        el.soloOpacitySlider.value = '50';
+        el.soloOpacityValue.textContent = '50%';
+        applyOverlayTransform();
+      }
+
+      function applyOverlayTransform() {
+        el.soloOverlayImg.style.opacity = String(state.overlayOpacity);
+        el.soloOverlayImg.style.transform =
+          'translate(-50%, -50%) translate(' +
+          state.overlayX.toFixed(1) + 'px, ' +
+          state.overlayY.toFixed(1) + 'px) scale(' +
+          state.overlayScale.toFixed(3) + ') rotate(' +
+          state.overlayRotation.toFixed(1) + 'deg)';
+        el.soloTransformBadge.textContent =
+          'Scale: ' + state.overlayScale.toFixed(2) + 'x • Rot: ' + Math.round(state.overlayRotation) + '°';
+      }
+
+      async function loadReferenceDataUrl(dataUrl) {
+        el.soloOverlayImg.onload = async function () {
+          state.overlayLoaded = true;
+          el.soloUploadStep.classList.add('hidden');
+          el.soloCameraStep.classList.remove('hidden');
+
+          const vw = el.soloViewport.clientWidth || 380;
+          const vh = el.soloViewport.clientHeight || 600;
+          const imgAspect = (el.soloOverlayImg.naturalWidth || 600) / (el.soloOverlayImg.naturalHeight || 800);
+          let displayW = vw * 0.85;
+          let displayH = displayW / imgAspect;
+          if (displayH > vh * 0.85) {
+            displayH = vh * 0.85;
+            displayW = displayH * imgAspect;
+          }
+          el.soloOverlayImg.style.width = displayW + 'px';
+          el.soloOverlayImg.style.height = displayH + 'px';
+
+          resetOverlayTransform();
+
+          if (!state.localStream) {
+            const camResult = await requestCameraStream('environment');
+            state.localStream = camResult.stream;
+            el.soloVideo.srcObject = state.localStream;
+          }
+        };
+        el.soloOverlayImg.src = dataUrl;
+      }
+
+      function handleSoloFileSelected(file) {
+        if (!file || !file.type.startsWith('image/')) {
+          showToast('Please select a valid image file (JPG, PNG, WebP).', 'error');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = function (evt) {
+          if (evt.target && evt.target.result) {
+            loadReferenceDataUrl(evt.target.result);
+          }
+        };
+        reader.onerror = function () {
+          showToast('Could not read the selected image file.', 'error');
+        };
+        reader.readAsDataURL(file);
+      }
+
+      function generateSamplePresetDataUrl(kind) {
+        const c = document.createElement('canvas');
+        c.width = 720;
+        c.height = 960;
+        const ctx = c.getContext('2d');
+        ctx.clearRect(0, 0, c.width, c.height);
+
+        if (kind === 'portrait') {
+          ctx.strokeStyle = '#ec4899';
+          ctx.lineWidth = 8;
+          ctx.fillStyle = 'rgba(236, 72, 153, 0.22)';
+          ctx.beginPath();
+          ctx.arc(360, 320, 95, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.roundRect(145, 445, 430, 420, [130, 130, 30, 30]);
+          ctx.fill();
+          ctx.stroke();
+          ctx.setLineDash([12, 10]);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.moveTo(200, 310);
+          ctx.lineTo(520, 310);
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 6;
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.18)';
+          ctx.fillRect(140, 220, 440, 560);
+          ctx.strokeRect(140, 220, 440, 560);
+          ctx.beginPath();
+          ctx.arc(360, 450, 130, Math.PI, 0, false);
+          ctx.lineTo(490, 780);
+          ctx.lineTo(230, 780);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+        return c.toDataURL('image/png');
+      }
+
+      function setupSoloGestures() {
+        const surface = el.soloViewport;
+        let isDraggingSingle = false;
+        let startSingleX = 0;
+        let startSingleY = 0;
+        let initialOffsetX = 0;
+        let initialOffsetY = 0;
+
+        let initialPinchDist = 0;
+        let initialPinchAngle = 0;
+        let initialPinchScale = 1;
+        let initialPinchRotation = 0;
+        let initialMidX = 0;
+        let initialMidY = 0;
+
+        function getTouchDistance(t1, t2) {
+          const dx = t2.clientX - t1.clientX;
+          const dy = t2.clientY - t1.clientY;
+          return Math.hypot(dx, dy);
+        }
+
+        function getTouchAngleDeg(t1, t2) {
+          return (Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180) / Math.PI;
+        }
+
+        surface.addEventListener('touchstart', function (e) {
+          if (!state.overlayLoaded) return;
+          if (e.target.closest('button')) return;
+          e.preventDefault();
+
+          if (e.touches.length === 1) {
+            isDraggingSingle = true;
+            startSingleX = e.touches[0].clientX;
+            startSingleY = e.touches[0].clientY;
+            initialOffsetX = state.overlayX;
+            initialOffsetY = state.overlayY;
+          } else if (e.touches.length >= 2) {
+            isDraggingSingle = false;
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            initialPinchDist = Math.max(10, getTouchDistance(t1, t2));
+            initialPinchAngle = getTouchAngleDeg(t1, t2);
+            initialPinchScale = state.overlayScale;
+            initialPinchRotation = state.overlayRotation;
+            initialMidX = (t1.clientX + t2.clientX) / 2;
+            initialMidY = (t1.clientY + t2.clientY) / 2;
+            initialOffsetX = state.overlayX;
+            initialOffsetY = state.overlayY;
+          }
+        }, { passive: false });
+
+        surface.addEventListener('touchmove', function (e) {
+          if (!state.overlayLoaded) return;
+          if (e.target.closest('button')) return;
+          e.preventDefault();
+
+          if (e.touches.length === 1 && isDraggingSingle) {
+            const dx = e.touches[0].clientX - startSingleX;
+            const dy = e.touches[0].clientY - startSingleY;
+            state.overlayX = initialOffsetX + dx;
+            state.overlayY = initialOffsetY + dy;
+            applyOverlayTransform();
+          } else if (e.touches.length >= 2) {
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            const currentDist = Math.max(10, getTouchDistance(t1, t2));
+            const currentAngle = getTouchAngleDeg(t1, t2);
+            const currentMidX = (t1.clientX + t2.clientX) / 2;
+            const currentMidY = (t1.clientY + t2.clientY) / 2;
+
+            const rawScale = initialPinchScale * (currentDist / initialPinchDist);
+            state.overlayScale = Math.min(5.0, Math.max(0.2, rawScale));
+            state.overlayRotation = initialPinchRotation + (currentAngle - initialPinchAngle);
+            state.overlayX = initialOffsetX + (currentMidX - initialMidX);
+            state.overlayY = initialOffsetY + (currentMidY - initialMidY);
+            applyOverlayTransform();
+          }
+        }, { passive: false });
+
+        surface.addEventListener('touchend', function (e) {
+          if (e.touches.length === 1) {
+            isDraggingSingle = true;
+            startSingleX = e.touches[0].clientX;
+            startSingleY = e.touches[0].clientY;
+            initialOffsetX = state.overlayX;
+            initialOffsetY = state.overlayY;
+          } else if (e.touches.length === 0) {
+            isDraggingSingle = false;
+          }
+        });
+
+        let isMouseDown = false;
+        surface.addEventListener('mousedown', function (e) {
+          if (!state.overlayLoaded || e.target.closest('button')) return;
+          isMouseDown = true;
+          startSingleX = e.clientX;
+          startSingleY = e.clientY;
+          initialOffsetX = state.overlayX;
+          initialOffsetY = state.overlayY;
+        });
+
+        window.addEventListener('mousemove', function (e) {
+          if (!isMouseDown || !state.overlayLoaded) return;
+          state.overlayX = initialOffsetX + (e.clientX - startSingleX);
+          state.overlayY = initialOffsetY + (e.clientY - startSingleY);
+          applyOverlayTransform();
+        });
+
+        window.addEventListener('mouseup', function () {
+          isMouseDown = false;
+        });
+
+        surface.addEventListener('wheel', function (e) {
+          if (!state.overlayLoaded) return;
+          e.preventDefault();
+          if (e.shiftKey) {
+            state.overlayRotation += e.deltaY > 0 ? 5 : -5;
+          } else {
+            const factor = e.deltaY < 0 ? 1.07 : 0.93;
+            state.overlayScale = Math.min(5.0, Math.max(0.2, state.overlayScale * factor));
+          }
+          applyOverlayTransform();
+        }, { passive: false });
+      }
+
+      function captureSoloComposite(includeOverlay) {
+        const videoEl = includeOverlay ? el.soloVideo : el.photographerVideo;
+        const containerEl = includeOverlay ? el.soloViewport : el.screenPhotographer;
+
+        const vidW = videoEl.videoWidth || 720;
+        const vidH = videoEl.videoHeight || 960;
+        const viewW = containerEl.clientWidth || 390;
+        const viewH = containerEl.clientHeight || 680;
+
+        const canvas = el.captureCanvas;
+        canvas.width = vidW;
+        canvas.height = vidH;
+        const ctx = canvas.getContext('2d');
+
+        ctx.save();
+        ctx.drawImage(videoEl, 0, 0, vidW, vidH);
+        ctx.restore();
+
+        if (includeOverlay && state.overlayLoaded && el.soloOverlayImg.complete) {
+          const coverScale = Math.max(viewW / vidW, viewH / vidH);
+          const renderedVidW = vidW * coverScale;
+          const renderedVidH = vidH * coverScale;
+          const cropOffsetX = (renderedVidW - viewW) / 2;
+          const cropOffsetY = (renderedVidH - viewH) / 2;
+
+          const screenCenterX = viewW / 2 + state.overlayX;
+          const screenCenterY = viewH / 2 + state.overlayY;
+
+          const canvasCenterX = (screenCenterX + cropOffsetX) / coverScale;
+          const canvasCenterY = (screenCenterY + cropOffsetY) / coverScale;
+
+          const baseDisplayW = parseFloat(el.soloOverlayImg.style.width) || viewW * 0.8;
+          const baseDisplayH = parseFloat(el.soloOverlayImg.style.height) || viewH * 0.6;
+          const canvasOverlayW = (baseDisplayW * state.overlayScale) / coverScale;
+          const canvasOverlayH = (baseDisplayH * state.overlayScale) / coverScale;
+
+          ctx.save();
+          ctx.globalAlpha = state.overlayOpacity;
+          ctx.translate(canvasCenterX, canvasCenterY);
+          ctx.rotate((state.overlayRotation * Math.PI) / 180);
+          ctx.drawImage(
+            el.soloOverlayImg,
+            -canvasOverlayW / 2,
+            -canvasOverlayH / 2,
+            canvasOverlayW,
+            canvasOverlayH
+          );
+          ctx.restore();
+        }
+
+        const dataUrl = canvas.toDataURL('image/jpeg', state.imageQuality);
+        const filename = 'fleeece_' + Date.now() + '.jpg';
+        state.lastCapturedDataUrl = dataUrl;
+        state.lastCapturedFilename = filename;
+
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        el.captureFilenameLabel.textContent = filename;
+        el.capturePreviewImg.src = dataUrl;
+        el.captureModal.classList.remove('hidden');
+        showToast('Saved ' + filename, 'success');
+      }
+
+      async function toggleSoloTorch() {
+        if (!state.localStream) return;
+        const track = state.localStream.getVideoTracks()[0];
+        if (!track || !track.getCapabilities) {
+          showToast('Flash control not supported on this camera.', 'error');
+          return;
+        }
+        const caps = track.getCapabilities();
+        if (!caps.torch) {
+          showToast('Flash is available on supported rear mobile cameras only.', 'info');
+          return;
+        }
+        try {
+          state.torchOn = !state.torchOn;
+          await track.applyConstraints({ advanced: [{ torch: state.torchOn }] });
+          showToast(state.torchOn ? 'Flash ON' : 'Flash OFF', 'success');
+        } catch (e) {
+          showToast('Could not toggle flash.', 'error');
+        }
+      }
+
+      async function flipSoloCamera() {
+        const nextFacing = state.facingMode === 'environment' ? 'user' : 'environment';
+        const oldStream = state.localStream;
+        const res = await requestCameraStream(nextFacing);
+        if (res && res.stream) {
+          state.localStream = res.stream;
+          el.soloVideo.srcObject = res.stream;
+          if (oldStream && oldStream !== res.stream) {
+            oldStream.getTracks().forEach(function (t) {
+              try { t.stop(); } catch (e) {}
+            });
+          }
+          showToast('Switched to ' + (nextFacing === 'user' ? 'Front' : 'Rear') + ' Camera', 'info');
+        }
+      }
+
+      function exitSoloMode() {
+        stopAllMediaAndPeers();
+        state.overlayLoaded = false;
+        el.soloOverlayImg.removeAttribute('src');
+        el.soloFileInput.value = '';
+        el.soloCameraStep.classList.add('hidden');
+        el.soloUploadStep.classList.remove('hidden');
+        showScreen('landing');
+      }
+
+      // --- 11. Event Listeners & Instant Auto-Connect ---
+      function initEvents() {
+        checkHttpsOrigin();
+        renderPoserDirectionButtons();
+        setupSoloGestures();
+
+        el.dismissHttpsBtn.addEventListener('click', function () {
+          el.httpsWarningBanner.classList.add('hidden');
+        });
+
+        el.btnStartApp.addEventListener('click', function () {
+          showScreen('landing');
+        });
+
+        // Settings Modal
+        el.btnOpenSettings.addEventListener('click', function () {
+          el.settingsModal.classList.remove('hidden');
+        });
+        el.btnCloseSettings.addEventListener('click', function () {
+          el.settingsModal.classList.add('hidden');
+        });
+        el.settingQuality.addEventListener('change', function (e) {
+          state.imageQuality = parseFloat(e.target.value) || 0.95;
+          showToast('Image quality updated.', 'info');
+        });
+        el.btnToggleOled.addEventListener('click', function () {
+          state.oledMode = !state.oledMode;
+          el.appShell.style.backgroundColor = state.oledMode ? '#000000' : '#0a0a12';
+          el.btnToggleOled.textContent = state.oledMode ? 'Active' : 'Standard';
+        });
+
+        // Role selection: BOTH Photographer and Poser now launch directly into Room A with ZERO code barrier!
+        el.btnRolePhotographer.addEventListener('click', function () {
+          startPhotographerSession('ROOMA');
+        });
+        el.btnRolePoser.addEventListener('click', function () {
+          // Jump straight into Poser Room A so the user never gets stuck on a code screen!
+          joinPhotographerSession('ROOMA');
+        });
+        el.btnRoleSolo.addEventListener('click', function () {
+          el.soloCameraStep.classList.add('hidden');
+          el.soloUploadStep.classList.remove('hidden');
+          showScreen('solo');
+        });
+
+        // 1-Tap Quick Room Buttons on Photographer Screen
+        document.querySelectorAll('.photo-quick-room').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const room = btn.dataset.quickRoom || 'ROOMA';
+            startPhotographerSession(room);
+            showToast('Photographer active in ' + room, 'success');
+          });
+        });
+
+        // 1-Tap Quick Room Buttons inside Live Poser Screen
+        document.querySelectorAll('.live-poser-room').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const room = btn.dataset.livePoserRoom || 'ROOMA';
+            joinPhotographerSession(room);
+            showToast('Poser switched to ' + room, 'success');
+          });
+        });
+
+        // 1-Tap Quick Room Buttons on Poser Join Screen
+        document.querySelectorAll('.poser-quick-room').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const room = btn.dataset.poserRoom || 'ROOMA';
+            joinPhotographerSession(room);
+            showToast('Joined ' + room + '!', 'success');
+          });
+        });
+
+        el.btnPoserDirectScreenShare.addEventListener('click', function () {
+          joinPhotographerSession('ROOMA');
+        });
+
+        function copyTextWithFallback(text, successMsg) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () {
+              showToast(successMsg, 'success');
+            }).catch(function () {
+              fallbackCopy(text, successMsg);
+            });
+          } else {
+            fallbackCopy(text, successMsg);
+          }
+        }
+
+        function fallbackCopy(text, successMsg) {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); } catch (e) {}
+          document.body.removeChild(ta);
+          showToast(successMsg, 'success');
+        }
+
+        el.btnCopySessionCode.addEventListener('click', function () {
+          if (!state.sessionCode) return;
+          copyTextWithFallback(state.sessionCode, 'Copied room ' + state.sessionCode);
+        });
+
+        el.btnPhotographerCopyLink.addEventListener('click', function () {
+          if (!state.sessionCode) return;
+          const base = location.origin + location.pathname;
+          const joinUrl = base + '?join=' + state.sessionCode;
+          copyTextWithFallback(joinUrl, 'Copied direct join link for Poser!');
+        });
+
+        el.btnPhotographerFlipCam.addEventListener('click', flipPhotographerCamera);
+        el.btnPhotographerShareScreen.addEventListener('click', function () {
+          el.shareHubModal.classList.remove('hidden');
+        });
+        el.btnClearPhotographerCast.addEventListener('click', function () {
+          el.photographerCastOverlay.classList.add('hidden');
+          el.photographerCastOverlay.removeAttribute('src');
+          el.btnClearPhotographerCast.classList.add('hidden');
+        });
+        el.btnPhotographerEnd.addEventListener('click', endPhotographerSession);
+        el.btnPhotographerSnap.addEventListener('click', function () {
+          captureSoloComposite(false);
+        });
+        el.btnSimulatePoserCue.addEventListener('click', function () {
+          const sample = DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
+          setPhotographerStatus('live');
+          displayIncomingCue(sample);
+        });
+
+        // Poser Quick-Start Card & Top Toolbar Buttons
+        el.btnQuickPoserScreenShare.addEventListener('click', startEasyLiveScreenShare);
+        el.btnQuickPoserMyCam.addEventListener('click', function () {
+          startPoserCameraBroadcast('user');
+        });
+        el.btnQuickPoserUploadPose.addEventListener('click', function () {
+          el.hubCastFileInput.click();
+        });
+        el.btnQuickPoserNativeCall.addEventListener('click', toggleFloatingPipWindow);
+        el.btnDismissPoserOverlay.addEventListener('click', function () {
+          el.poserConnectingOverlay.classList.add('hidden');
+        });
+
+        el.btnBarPoserScreen.addEventListener('click', startEasyLiveScreenShare);
+        el.btnBarPoserCam.addEventListener('click', function () {
+          startPoserCameraBroadcast(state.facingMode || 'user');
+        });
+        el.btnBarPoserPose.addEventListener('click', function () {
+          el.hubCastFileInput.click();
+        });
+        el.btnBarPoserPip.addEventListener('click', toggleFloatingPipWindow);
+        el.btnBarPoserFlip.addEventListener('click', function () {
+          const nextMode = state.facingMode === 'user' ? 'environment' : 'user';
+          startPoserCameraBroadcast(nextMode);
+        });
+
+        // Share Hub Modal Events
+        el.btnPoserOpenShareHub.addEventListener('click', function () {
+          el.shareHubModal.classList.remove('hidden');
+        });
+        el.btnCloseShareHub.addEventListener('click', function () {
+          el.shareHubModal.classList.add('hidden');
+        });
+        el.btnHubLiveScreenShare.addEventListener('click', startEasyLiveScreenShare);
+        el.btnHubCastPhoto.addEventListener('click', function () {
+          el.hubCastFileInput.click();
+        });
+        el.hubCastFileInput.addEventListener('change', function (e) {
+          if (e.target.files && e.target.files[0]) {
+            handleHubCastFile(e.target.files[0]);
+            e.target.value = '';
+          }
+        });
+        el.btnHubShareMyCamera.addEventListener('click', function () {
+          startPoserCameraBroadcast('user');
+        });
+        el.btnHubFloatPip.addEventListener('click', toggleFloatingPipWindow);
+
+        // Join & Poser events
+        el.btnJoinBack.addEventListener('click', function () {
+          stopAllMediaAndPeers();
+          showScreen('landing');
+        });
+
+        el.joinCodeInput.addEventListener('input', function (e) {
+          const raw = e.target.value.toUpperCase();
+          let cleaned = '';
+          for (let i = 0; i < raw.length; i++) {
+            if (VALID_CHARS.indexOf(raw[i]) !== -1) {
+              cleaned += raw[i];
+            }
+          }
+          e.target.value = cleaned.slice(0, 5);
+          el.btnJoinConnect.disabled = e.target.value.length !== 5;
+          el.joinErrorBox.classList.add('hidden');
+        });
+
+        el.btnJoinConnect.addEventListener('click', function () {
+          joinPhotographerSession(el.joinCodeInput.value);
+        });
+
+        el.btnJoinDemoMode.addEventListener('click', function () {
+          startSimulatedPoserDemo();
+        });
+
+        el.btnPoserEnd.addEventListener('click', function () {
+          sendRoomMessage({ type: 'end', senderRole: 'poser' });
+          stopAllMediaAndPeers();
+          showScreen('landing');
+        });
+
+        // Solo Reference Overlay events
+        el.btnSoloUploadBack.addEventListener('click', function () {
+          exitSoloMode();
+        });
+
+        el.soloDropZone.addEventListener('click', function () {
+          el.soloFileInput.click();
+        });
+
+        el.soloDropZone.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          el.soloDropZone.classList.add('border-pink-400', 'bg-pink-500/15');
+        });
+
+        el.soloDropZone.addEventListener('dragleave', function () {
+          el.soloDropZone.classList.remove('border-pink-400', 'bg-pink-500/15');
+        });
+
+        el.soloDropZone.addEventListener('drop', function (e) {
+          e.preventDefault();
+          el.soloDropZone.classList.remove('border-pink-400', 'bg-pink-500/15');
+          if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+            handleSoloFileSelected(e.dataTransfer.files[0]);
+          }
+        });
+
+        el.soloFileInput.addEventListener('change', function (e) {
+          if (e.target.files && e.target.files[0]) {
+            handleSoloFileSelected(e.target.files[0]);
+          }
+        });
+
+        el.btnSamplePortrait.addEventListener('click', function () {
+          loadReferenceDataUrl(generateSamplePresetDataUrl('portrait'));
+        });
+
+        el.btnSampleArchitecture.addEventListener('click', function () {
+          loadReferenceDataUrl(generateSamplePresetDataUrl('architecture'));
+        });
+
+        el.btnSoloChangePhoto.addEventListener('click', function () {
+          el.soloFileInput.click();
+        });
+
+        el.btnSoloResetTransform.addEventListener('click', function () {
+          resetOverlayTransform();
+          showToast('Overlay position reset', 'info');
+        });
+
+        el.btnSoloFlash.addEventListener('click', toggleSoloTorch);
+        el.btnSoloFlipCam.addEventListener('click', flipSoloCamera);
+        el.btnSoloExit.addEventListener('click', exitSoloMode);
+
+        el.soloOpacitySlider.addEventListener('input', function (e) {
+          const val = parseInt(e.target.value, 10);
+          state.overlayOpacity = val / 100;
+          el.soloOpacityValue.textContent = val + '%';
+          el.soloOverlayImg.style.opacity = String(state.overlayOpacity);
+        });
+
+        el.btnSoloRotateLeft.addEventListener('click', function () {
+          state.overlayRotation -= 15;
+          applyOverlayTransform();
+        });
+
+        el.btnSoloRotateRight.addEventListener('click', function () {
+          state.overlayRotation += 15;
+          applyOverlayTransform();
+        });
+
+        el.btnSoloShutter.addEventListener('click', function () {
+          captureSoloComposite(true);
+        });
+
+        // Capture Result Modal (Share / Retake / Done)
+        el.btnCaptureShare.addEventListener('click', async function () {
+          if (!state.lastCapturedDataUrl) return;
+          if (navigator.share) {
+            try {
+              const res = await fetch(state.lastCapturedDataUrl);
+              const blob = await res.blob();
+              const file = new File([blob], state.lastCapturedFilename || 'fleeece.jpg', { type: 'image/jpeg' });
+              await navigator.share({
+                title: 'Fleeece Photo',
+                files: [file]
+              });
+              return;
+            } catch (e) {}
+          }
+          const a = document.createElement('a');
+          a.href = state.lastCapturedDataUrl;
+          a.download = state.lastCapturedFilename || 'fleeece.jpg';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          showToast('Downloaded ' + (state.lastCapturedFilename || 'photo'), 'success');
+        });
+
+        el.btnCaptureRetake.addEventListener('click', function () {
+          el.captureModal.classList.add('hidden');
+        });
+
+        el.btnCaptureDone.addEventListener('click', function () {
+          el.captureModal.classList.add('hidden');
+        });
+
+        // Check if opened via direct join link (?join=ROOMA)
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const autoJoin = params.get('join');
+          if (autoJoin && autoJoin.trim().length === 5) {
+            const cleanCode = autoJoin.trim().toUpperCase();
+            joinPhotographerSession(cleanCode);
+          }
+        } catch (e) {}
+      }
+
+      window.addEventListener('DOMContentLoaded', initEvents);
+    })();
+  </script>
+</body>
+</html>
